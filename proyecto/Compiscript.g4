@@ -27,47 +27,47 @@ statement
   | returnStatement
   ;
 
-block: '{' statement* '}';
+block: LBRACE statement* RBRACE;
 
 variableDeclaration
-  : ('let' | 'var') Identifier typeAnnotation? initializer? ';'
+  : (LET | VAR) Identifier typeAnnotation? initializer? SEMICOLON
   ;
 
 constantDeclaration
-  : 'const' Identifier typeAnnotation? '=' expression ';'
+  : CONST Identifier typeAnnotation? ASSIGN expression SEMICOLON
   ;
 
-typeAnnotation: ':' type;
-initializer: '=' expression;
+typeAnnotation: COLON type;
+initializer: ASSIGN expression;
 
 assignment
-  : Identifier '=' expression ';'
-  | expression '.' Identifier '=' expression ';' // property assignment
+  : Identifier ASSIGN expression SEMICOLON
+  | expression DOT Identifier ASSIGN expression SEMICOLON // property assignment
   ;
 
-expressionStatement: expression ';';
-printStatement: 'print' '(' expression ')' ';';
+expressionStatement: expression SEMICOLON;
+printStatement: PRINT LPAREN expression RPAREN SEMICOLON;
 
-ifStatement: 'if' '(' expression ')' block ('else' block)?;
-whileStatement: 'while' '(' expression ')' block;
-doWhileStatement: 'do' block 'while' '(' expression ')' ';';
-forStatement: 'for' '(' (variableDeclaration | assignment | ';') expression? ';' expression? ')' block;
-foreachStatement: 'foreach' '(' Identifier 'in' expression ')' block;
-breakStatement: 'break' ';';
-continueStatement: 'continue' ';';
-returnStatement: 'return' expression? ';';
+ifStatement: IF LPAREN expression RPAREN block (ELSE block)?;
+whileStatement: WHILE LPAREN expression RPAREN block;
+doWhileStatement: DO block WHILE LPAREN expression RPAREN SEMICOLON;
+forStatement: FOR LPAREN (variableDeclaration | assignment | SEMICOLON) expression? SEMICOLON expression? RPAREN block;
+foreachStatement: FOREACH LPAREN Identifier IN expression RPAREN block;
+breakStatement: BREAK SEMICOLON;
+continueStatement: CONTINUE SEMICOLON;
+returnStatement: RETURN expression? SEMICOLON;
 
-tryCatchStatement: 'try' block 'catch' '(' Identifier ')' block;
+tryCatchStatement: TRY block CATCH LPAREN Identifier RPAREN block;
 
-switchStatement: 'switch' '(' expression ')' '{' switchCase* defaultCase? '}';
-switchCase: 'case' expression ':' statement*;
-defaultCase: 'default' ':' statement*;
+switchStatement: SWITCH LPAREN expression RPAREN LBRACE switchCase* defaultCase? RBRACE;
+switchCase: CASE expression COLON statement*;
+defaultCase: DEFAULT COLON statement*;
 
-functionDeclaration: 'function' Identifier '(' parameters? ')' (':' type)? block;
-parameters: parameter (',' parameter)*;
-parameter: Identifier (':' type)?;
+functionDeclaration: FUNCTION Identifier LPAREN parameters? RPAREN (COLON type)? block;
+parameters: parameter (COMMA parameter)*;
+parameter: Identifier (COLON type)?;
 
-classDeclaration: 'class' Identifier (':' Identifier)? '{' classMember* '}';
+classDeclaration: CLASS Identifier (COLON Identifier)? LBRACE classMember* RBRACE;
 classMember: functionDeclaration | variableDeclaration | constantDeclaration;
 
 // ------------------
@@ -77,56 +77,56 @@ classMember: functionDeclaration | variableDeclaration | constantDeclaration;
 expression: assignmentExpr;
 
 assignmentExpr
-  : lhs=leftHandSide '=' assignmentExpr            # AssignExpr
-  | lhs=leftHandSide '.' Identifier '=' assignmentExpr # PropertyAssignExpr
-  | conditionalExpr                                # ExprNoAssign
+  : lhs=leftHandSide ASSIGN assignmentExpr                      # AssignExpr
+  | lhs=leftHandSide DOT Identifier ASSIGN assignmentExpr       # PropertyAssignExpr
+  | conditionalExpr                                             # ExprNoAssign
   ;
 
 conditionalExpr
-  : logicalOrExpr ('?' expression ':' expression)? # TernaryExpr
+  : logicalOrExpr (QUESTION expression COLON expression)?       # TernaryExpr
   ;
 
 logicalOrExpr
-  : logicalAndExpr ( '||' logicalAndExpr )*
+  : logicalAndExpr (OR logicalAndExpr)*
   ;
 
 logicalAndExpr
-  : equalityExpr ( '&&' equalityExpr )*
+  : equalityExpr (AND equalityExpr)*
   ;
 
 equalityExpr
-  : relationalExpr ( ('==' | '!=') relationalExpr )*
+  : relationalExpr ((EQ | NEQ) relationalExpr)*
   ;
 
 relationalExpr
-  : additiveExpr ( ('<' | '<=' | '>' | '>=') additiveExpr )*
+  : additiveExpr ((LT | LE | GT | GE) additiveExpr)*
   ;
 
 additiveExpr
-  : multiplicativeExpr ( ('+' | '-') multiplicativeExpr )*
+  : multiplicativeExpr ((PLUS | MINUS) multiplicativeExpr)*
   ;
 
 multiplicativeExpr
-  : unaryExpr ( ('*' | '/' | '%') unaryExpr )*
+  : unaryExpr ((MULT | DIV | MOD) unaryExpr)*
   ;
 
 unaryExpr
-  : ('-' | '!') unaryExpr
+  : (MINUS | NOT) unaryExpr
   | primaryExpr
   ;
 
 primaryExpr
   : literalExpr
   | leftHandSide
-  | '(' expression ')'
+  | LPAREN expression RPAREN
   ;
 
 literalExpr
   : Literal
   | arrayLiteral
-  | 'null'
-  | 'true'
-  | 'false'
+  | NULL
+  | TRUE
+  | FALSE
   ;
 
 leftHandSide
@@ -135,26 +135,26 @@ leftHandSide
 
 primaryAtom
   : Identifier                                 # IdentifierExpr
-  | 'new' Identifier '(' arguments? ')'        # NewExpr
-  | 'this'                                     # ThisExpr
+  | NEW Identifier LPAREN arguments? RPAREN    # NewExpr
+  | THIS                                       # ThisExpr
   ;
 
 suffixOp
-  : '(' arguments? ')'                        # CallExpr
-  | '[' expression ']'                        # IndexExpr
-  | '.' Identifier                            # PropertyAccessExpr
+  : LPAREN arguments? RPAREN                   # CallExpr
+  | LBRACK expression RBRACK                   # IndexExpr
+  | DOT Identifier                             # PropertyAccessExpr
   ;
 
-arguments: expression (',' expression)*;
+arguments: expression (COMMA expression)*;
 
-arrayLiteral: '[' (expression (',' expression)*)? ']';
+arrayLiteral: LBRACK (expression (COMMA expression)*)? RBRACK;
 
 // ------------------
 // Types
 // ------------------
 
-type: baseType ('[' ']')*;
-baseType: 'boolean' | 'integer' | 'string' | Identifier;
+type: baseType (LBRACK RBRACK)*;
+baseType: BOOLEAN | INTEGER | STRING | Identifier;
 
 // ------------------
 // Lexer Rules
@@ -171,6 +171,7 @@ WHILE: 'while';
 DO: 'do';
 FOR: 'for';
 FOREACH: 'foreach';
+IN: 'in';
 BREAK: 'break';
 CONTINUE: 'continue';
 RETURN: 'return';
