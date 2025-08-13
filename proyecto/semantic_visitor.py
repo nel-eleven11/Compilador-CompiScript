@@ -32,7 +32,7 @@ class SemanticVisitor(CompiscriptVisitor):
         const_type = self.get_type_from_ctx(ctx.typeAnnotation().type_() if ctx.typeAnnotation() else None)
         
         if not ctx.expression():
-            self.add_error(ctx, f"Error semántico: Constante '{const_name}' debe ser inicializada")
+            self.add_error(ctx, f"Constante '{const_name}' debe ser inicializada")
             
         symbol = VariableSymbol(
             name=const_name,
@@ -61,45 +61,99 @@ class SemanticVisitor(CompiscriptVisitor):
             else:  # Es numero ya que solo se se tienen definidas 2 liteerales en la gramatica, o string o numero
                 return INT_TYPE
         elif ctx.arrayLiteral():
-            # El manejo de arrays ta pendiente
-            return None
+            return self.visit(ctx.arrayLiteral())
         return None
+    
+    # Determinar el tipo de un array literal
+    def visitArrayLiteral(self, ctx):
+        
+        if not ctx.expression() or len(ctx.expression()) == 0:
+            return ArrayType(NULL_TYPE, [0])  # Array vacío de tipo desconocido
+        
+        # Verificar que todos los elementos sean del mismo tipo
+        element_type = self.visit(ctx.expression(0))
+        for expr in ctx.expression()[1:]:
+            current_type = self.visit(expr)
+            if current_type != element_type:
+                self.add_error(ctx, f"Errore Semántico: Elementos de array con tipos inconsistentes: {element_type.name} vs {current_type.name}")
+                return None
+        
+        return ArrayType(element_type, [len(ctx.expression())])
 
     def visitVariableDeclaration(self, ctx):
         var_name = ctx.Identifier().getText()
-
-        var_type = self.get_type_from_ctx(ctx.typeAnnotation().type_() if ctx.typeAnnotation() else None)
+        declared_type = self.get_type_from_ctx(ctx.typeAnnotation().type_()) if ctx.typeAnnotation() else None
         
         # Inferir tipo si no hay anotación
-        if not var_type and ctx.initializer():
-            var_type = self.visit(ctx.initializer().expression())
-
+        initializer_type = self.visit(ctx.initializer().expression()) if ctx.initializer() else None
+        
+        # Determinar el tipo final
+        if declared_type:
+            final_type = declared_type
+        else:
+            final_type = initializer_type if initializer_type else NULL_TYPE
+        
         symbol = VariableSymbol(
             name=var_name,
-            type_=var_type or NULL_TYPE,
+            type_=final_type,
             scope_level=self.symbol_table.current_scope,
             is_const=False
         )
 
+        # Verificar asignación inicial
         if ctx.initializer():
             expr_type = self.visit(ctx.initializer().expression())
-            if expr_type and not expr_type.can_assign_to(var_type):
-                self.add_error(ctx, f"Errorr Semántico: No se puede asignar {expr_type.name} a {var_type.name}")
+            if expr_type and not expr_type.can_assign_to(final_type):
+                self.add_error(ctx, f"No se puede asignar {expr_type.name} a {final_type.name}")
 
         try:
             self.symbol_table.add_symbol(symbol)
-            #print(f"Variable '{var_name}' registrada")
         except Exception as e:
             self.add_error(ctx, str(e))
             
         return self.visitChildren(ctx)
+    
+    #Versión flexible de verificación de tipos
+    def check_assignment(self, source_type, target_type, is_nullable):
+        
+        if source_type == NULL_TYPE:
+            return is_nullable
+        return source_type.can_assign_to(target_type)
+    
+    def visitAssignment(self, ctx):
+        # Obtener el símbolo de la variable
+        var_name = ctx.Identifier().getText() if ctx.Identifier() else None
+        if not var_name:
+            return self.visitChildren(ctx)
+        
+        var_symbol = self.symbol_table.lookup(var_name)
+        if not var_symbol:
+            self.add_error(ctx, f"Variable '{var_name}' no declarada")
+            return
+            
+        if var_symbol.is_const:
+            self.add_error(ctx, f"No se puede reasignar la constante '{var_name}'")
+            return
+            
+        # Obtener tipo de la expresión
+        expr_ctx = ctx.expression()[0] if isinstance(ctx.expression(), list) else ctx.expression()
+        expr_type = self.visit(expr_ctx) if expr_ctx else None
+        
+        # Regla especial: Permitir cambiar de null a tipo concreto
+        if var_symbol.type == NULL_TYPE and expr_type and expr_type != NULL_TYPE:
+            print(f"Info: Variable '{var_name}' cambia de null a {expr_type.name}")
+            var_symbol.type = expr_type  # Actualizar el tipo dinámicamente
+        elif expr_type and not expr_type.can_assign_to(var_symbol.type):
+            self.add_error(ctx, f"No se puede asignar {expr_type.name} a {var_symbol.type.name}")
+        
+        return expr_type
     
     def visitFunctionDeclaration(self, ctx):
         func_name = ctx.Identifier().getText()
         return_type = self.get_type_from_ctx(ctx.type_()) if ctx.type_() else VOID_TYPE
         
         if return_type == VOID_TYPE and ctx.type_():
-            self.add_error(ctx, f"Error Semántico: Uso explícito de 'void' no permitido en funciones")
+            self.add_error(ctx, f"Uso explícito de 'void' no permitido en funciones")
             return
     
         func_symbol = FunctionSymbol(
@@ -143,7 +197,7 @@ class SemanticVisitor(CompiscriptVisitor):
         
         # Verificar retornos
         if return_type != VOID_TYPE and not func_symbol.return_statements:
-            self.add_error(ctx, f"Error Semántico: Función '{func_name}' debe retornar un valor")
+            self.add_error(ctx, f"Función '{func_name}' debe retornar un valor")
             
         # Salir del ámbito
         self.symbol_table.exit_scope()
@@ -154,16 +208,16 @@ class SemanticVisitor(CompiscriptVisitor):
     # En semantic_visitor.py
     def visitReturnStatement(self, ctx):
         if not self.current_function:
-            self.add_error(ctx, "Error semántico: return fuera de función")
+            self.add_error(ctx, "return fuera de función")
             return
             
         expr_type = self.visit(ctx.expression()) if ctx.expression() else VOID_TYPE
         
         if self.current_function.return_type == VOID_TYPE:
             if ctx.expression():
-                self.add_error(ctx, "Error semántico: Función void no debe retornar valor")
+                self.add_error(ctx, "Función void no debe retornar valor")
         elif expr_type != self.current_function.return_type:
-            self.add_error(ctx, f"Error semántico: Tipo de retorno no coincide. Esperado: {self.current_function.return_type.name}")
+            self.add_error(ctx, f"Tipo de retorno no coincide. Esperado: {self.current_function.return_type.name}")
         
         self.current_function.return_statements.append(expr_type)
         return expr_type

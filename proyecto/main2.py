@@ -5,20 +5,20 @@ from CompiscriptParser import CompiscriptParser
 from semantic_visitor import SemanticVisitor
 
 def main(argv):
-    # 1. Configuración inicial
+    # configracion
     input_stream = FileStream(argv[1])
     lexer = CompiscriptLexer(input_stream)
     stream = CommonTokenStream(lexer)
     parser = CompiscriptParser(stream)
     
-    # 2. Análisis sintáctico
+    # sintactico
     tree = parser.program()
     
-    # 3. Análisis semántico
+    # semantico
     analyzer = SemanticVisitor()
     analyzer.visit(tree)
     
-    # 4. Reportar resultados
+    # resultados
     if analyzer.errors:
         print("\n=== Errores encontrados ===")
         for error in analyzer.errors:

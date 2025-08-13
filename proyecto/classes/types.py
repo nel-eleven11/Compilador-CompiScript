@@ -14,14 +14,9 @@ class Type:
     def can_assign_to(self, other_type):
         
         if self == NULL_TYPE:
-            # null puede asignarse a cualquier tipo nullable (objetos, arrays)
+            # null puede asignarse a cualquier tipo excepto primitivos no-nullables
             return other_type not in (INT_TYPE, BOOL_TYPE, VOID_TYPE)
-        if self == other_type:
-            return True
-        # Verifica herencia
-        if self.parent:
-            return self.parent.can_assign_to(other_type)
-        return False
+        return self == other_type or (self.parent and self.parent.can_assign_to(other_type))
 
 class PrimitiveType(Type):
     def __init__(self, name, width):

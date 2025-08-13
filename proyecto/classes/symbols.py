@@ -17,6 +17,10 @@ class VariableSymbol(Symbol):
         self.is_const = is_const
         self.initialized = False
         self.offset = 0  # para el futuro, generacion de codigo
+        self.is_nullable = True
+    def __str__(self):
+        const_str = " (const)" if self.is_const else ""
+        return f"{self.name}: {self.type.name if self.type else '?'}{const_str}"
 
 class FunctionSymbol(Symbol):
     def __init__(self, name, return_type, scope_level, params=None):
