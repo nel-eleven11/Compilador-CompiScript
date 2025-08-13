@@ -1,11 +1,15 @@
+from .symbols import *
+
 class Scope:
-    def __init__(self, scope_level=0):
+    def __init__(self, scope_level, scope_type="block"):
         self.symbols = {}
         self.scope_level = scope_level
+        self.scope_type = scope_type  # 'global', 'function', 'class', 'block'
         
     def add(self, symbol):
         if symbol.name in self.symbols:
             raise Exception(f"Symbol '{symbol.name}' already exists in this scope")
+        symbol.scope_level = self.scope_level
         self.symbols[symbol.name] = symbol
         
     def lookup(self, name):
@@ -13,28 +17,46 @@ class Scope:
 
 class SymbolTable:
     def __init__(self):
-        self.scopes = [Scope(0)]  # Ámbito global inicial
+        self.scopes = [Scope(0, "global")]
         self.current_scope = 0
         
-    def enter_scope(self):
-        """Crea un nuevo ámbito anidado"""
+    def enter_scope(self, scope_type="block"):
         self.current_scope += 1
-        self.scopes.append(Scope(self.current_scope))
+        self.scopes.append(Scope(self.current_scope, scope_type))
         
     def exit_scope(self):
-        """Elimina el ámbito más interno"""
         if self.current_scope > 0:
-            self.scopes.pop()
+            discarded = self.scopes.pop()
             self.current_scope -= 1
-            
-    def add_symbol(self, symbol):
-        """Añade símbolo al ámbito actual"""
-        self.scopes[self.current_scope].add(symbol)
+            return discarded
+        raise Exception("Cannot exit global scope")
         
-    def lookup(self, name):
-        """Busca símbolo desde el ámbito actual hacia afuera"""
+    def add_symbol(self, symbol):
+        self.scopes[-1].add(symbol)
+        
+    def lookup(self, name, current_scope_only=False):
+        """Busca un símbolo, opcionalmente solo en el ámbito actual"""
+        if current_scope_only:
+            return self.scopes[-1].lookup(name)
+            
         for scope in reversed(self.scopes):
             symbol = scope.lookup(name)
             if symbol is not None:
                 return symbol
+        return None
+        
+    def lookup_in_class(self, class_name, member_name):
+        """Busca un miembro específico en una clase"""
+        class_symbol = self.lookup(class_name)
+        if not class_symbol or not isinstance(class_symbol, ClassSymbol):
+            return None
+            
+        # Busca en jerarquía de herencia
+        current = class_symbol
+        while current:
+            if member_name in current.attributes:
+                return current.attributes[member_name]
+            if member_name in current.methods:
+                return current.methods[member_name]
+            current = current.parent_class
         return None

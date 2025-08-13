@@ -15,7 +15,6 @@ def main(argv):
     tree = parser.program()
     
     # 3. Análisis semántico
-    print("\n=== Análisis Semántico ===")
     analyzer = SemanticVisitor()
     analyzer.visit(tree)
     
@@ -25,7 +24,7 @@ def main(argv):
         for error in analyzer.errors:
             print(error)
     else:
-        print("\n✔ Análisis semántico completado sin errores")
+        print("\nAnálisis semántico completado sin errores")
         
     # 5. Mostrar tabla de símbolos (debug)
     print("\n=== Tabla de Símbolos ===")
