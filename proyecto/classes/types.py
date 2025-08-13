@@ -3,15 +3,19 @@ from functools import reduce
 class Type:
     def __init__(self, name, parent=None):
         self.name = name
-        self.parent = parent  # Para herencia
-        self.width = 0       # Tamaño en bytes
-        self.methods = {}    # Métodos disponibles
+        self.parent = parent  
+        self.width = 0       # bytes
+        self.methods = {}    # 
         
     def __eq__(self, other):
         return isinstance(other, Type) and self.name == other.name
-        
+    
+    # Verifica compatibilidad de tipos en asignaciones
     def can_assign_to(self, other_type):
-        """Verifica compatibilidad de tipos en asignaciones"""
+        
+        if self == NULL_TYPE:
+            # null puede asignarse a cualquier tipo nullable (objetos, arrays)
+            return other_type not in (INT_TYPE, BOOL_TYPE, VOID_TYPE)
         if self == other_type:
             return True
         # Verifica herencia
@@ -36,17 +40,20 @@ INT_TYPE = PrimitiveType("integer", 4)
 BOOL_TYPE = PrimitiveType("boolean", 1)
 STRING_TYPE = PrimitiveType("string", 16)
 VOID_TYPE = Type("void")
+NULL_TYPE = Type("null")
 
 TYPE_MAP = {
     "integer": INT_TYPE,
     "boolean": BOOL_TYPE,
     "string": STRING_TYPE,
-    "void": VOID_TYPE 
+    "void": VOID_TYPE
 }
 
-
+#Obtiene tipo desde texto, soportando arrays
 def get_type_from_string(type_str):
-    """Obtiene tipo desde texto, soportando arrays"""
+    if type_str == "null":
+        return NULL_TYPE
+    
     if type_str == "void":
         return VOID_TYPE
     

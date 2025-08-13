@@ -8,7 +8,7 @@ class Scope:
         
     def add(self, symbol):
         if symbol.name in self.symbols:
-            raise Exception(f"Symbol '{symbol.name}' already exists in this scope")
+            raise Exception(f"Error semántico: Symbol '{symbol.name}' ya existe en el scope")
         symbol.scope_level = self.scope_level
         self.symbols[symbol.name] = symbol
         

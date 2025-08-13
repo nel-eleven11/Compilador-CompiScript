@@ -5,6 +5,11 @@ let flag: boolean;
 
 PI = 90;
 
+let a = 10;        // INT_TYPE
+let b = "hola";    // STRING_TYPE
+let c = true;      // BOOL_TYPE
+let d = null;      // NULL_TYPE
+
 function greet(name: string) {
     print("Hello " + name);
     return "hi";

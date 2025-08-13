@@ -6,7 +6,7 @@ class Symbol:
         self.type = type_      # Objeto Type
         self.category = category  # 'variable', 'function', 'class'
         self.scope_level = scope_level
-        self.line_number = -1  # Para reporte de errores
+        self.line_number = -1  # errores
         
     def __str__(self):
         return f"{self.category} {self.name}: {self.type} (scope: {self.scope_level})"
@@ -16,12 +16,12 @@ class VariableSymbol(Symbol):
         super().__init__(name, type_, "variable", scope_level)
         self.is_const = is_const
         self.initialized = False
-        self.offset = 0  # Para generación de código
+        self.offset = 0  # para el futuro, generacion de codigo
 
 class FunctionSymbol(Symbol):
     def __init__(self, name, return_type, scope_level, params=None):
         super().__init__(name, return_type, "function", scope_level)
-        self.return_type = return_type  # Añade este atributo explícitamente
+        self.return_type = return_type
         self.parameters = params or []
         self.locals = []
         self.return_statements = []
