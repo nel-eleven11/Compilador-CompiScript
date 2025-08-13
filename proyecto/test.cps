@@ -3,13 +3,15 @@ const PI: integer = 314;
 let greeting: string = "Hello, Compiscript!";
 let flag: boolean;
 
-PI = 90;
+PI = 90; // error, no se peude reasignar
 
-let a = 10;        // INT_TYPE
-let b = "hola";    // STRING_TYPE
-let ba = "hola";    // STRING_TYPE
-let c = true;      // BOOL_TYPE
+const PI: integer = 3;
+const NAME = "Alice";  // Tipo inferido
+const FLAG: boolean = true;
 
+const UNINITIALIZED;  // Error: falta inicializacion
+const BAD: integer = "text";  // Error: tipo incorrecto
+const NULL_CONST = null;  // Error: requiere tipo explicito
 let a1: integer = 10;
 let b1: string = "hola";
 let c1: boolean = true;
@@ -37,3 +39,12 @@ let d2 = null;
 
 let z = null;      // Tipo null inicialmente
 z = "hola";        // a
+
+// Array de enteros explicito
+let nums: integer[] = [1, 2, 3];
+
+// Array de strings inferido
+let names = ["a", "b", "c"];
+
+// Array multidimensional
+let matrix: integer[][] = [[1, 2], [3, 4]];

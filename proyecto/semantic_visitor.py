@@ -29,21 +29,38 @@ class SemanticVisitor(CompiscriptVisitor):
         
     def visitConstantDeclaration(self, ctx):
         const_name = ctx.Identifier().getText()
-        const_type = self.get_type_from_ctx(ctx.typeAnnotation().type_() if ctx.typeAnnotation() else None)
+        declared_type = self.get_type_from_ctx(ctx.typeAnnotation().type_()) if ctx.typeAnnotation() else None
         
+        # inicializacion obligatoria
         if not ctx.expression():
             self.add_error(ctx, f"Constante '{const_name}' debe ser inicializada")
+            return
             
+        # tipo del valor inicializador
+        initializer_type = self.visit(ctx.expression())
+        
+        # si notiene tipo declarado, inferirlo del inicializador
+        if not declared_type:
+            if initializer_type == NULL_TYPE:
+                self.add_error(ctx, f"Constante '{const_name}' requiere tipo explícito cuando se inicializa con null")
+                return
+            declared_type = initializer_type
+        
+        # compatibilidad de tipos
+        if initializer_type and not initializer_type.can_assign_to(declared_type):
+            self.add_error(ctx, f"No se puede asignar {initializer_type.name} a {declared_type.name} en constante")
+            return
+            
+        # Crear símbolo
         symbol = VariableSymbol(
             name=const_name,
-            type_=const_type or VOID_TYPE,
+            type_=declared_type,
             scope_level=self.symbol_table.current_scope,
             is_const=True
         )
         
         try:
             self.symbol_table.add_symbol(symbol)
-            #print(f"Constante '{const_name}' registrada")
         except Exception as e:
             self.add_error(ctx, str(e))
             
@@ -75,7 +92,7 @@ class SemanticVisitor(CompiscriptVisitor):
         for expr in ctx.expression()[1:]:
             current_type = self.visit(expr)
             if current_type != element_type:
-                self.add_error(ctx, f"Errore Semántico: Elementos de array con tipos inconsistentes: {element_type.name} vs {current_type.name}")
+                self.add_error(ctx, f"Elementos de array con tipos inconsistentes: {element_type.name} vs {current_type.name}")
                 return None
         
         return ArrayType(element_type, [len(ctx.expression())])
@@ -141,7 +158,7 @@ class SemanticVisitor(CompiscriptVisitor):
         
         # Regla especial: Permitir cambiar de null a tipo concreto
         if var_symbol.type == NULL_TYPE and expr_type and expr_type != NULL_TYPE:
-            print(f"Info: Variable '{var_name}' cambia de null a {expr_type.name}")
+            #print(f"Info: Variable '{var_name}' cambia de null a {expr_type.name}")
             var_symbol.type = expr_type  # Actualizar el tipo dinámicamente
         elif expr_type and not expr_type.can_assign_to(var_symbol.type):
             self.add_error(ctx, f"No se puede asignar {expr_type.name} a {var_symbol.type.name}")

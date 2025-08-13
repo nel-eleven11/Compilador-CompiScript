@@ -1,26 +1,33 @@
 from .types import Type
 
+# La clase base Symbol se mantiene simple, ya que los subtipos tendrán sus propios __str__
 class Symbol:
     def __init__(self, name, type_, category, scope_level):
         self.name = name
         self.type = type_      # Objeto Type
         self.category = category  # 'variable', 'function', 'class'
         self.scope_level = scope_level
-        self.line_number = -1  # errores
+        self.line_number = -1  # Para reportes de errores
         
     def __str__(self):
-        return f"{self.category} {self.name}: {self.type} (scope: {self.scope_level})"
+        # Esta es una representación generica
+        return f"{self.category.capitalize()} {self.name}: {self.type.name if self.type else '?'}, scope: {self.scope_level}"
 
 class VariableSymbol(Symbol):
     def __init__(self, name, type_, scope_level, is_const=False):
+        # El tipo ahora se almacena directamente en la clase base.
         super().__init__(name, type_, "variable", scope_level)
         self.is_const = is_const
         self.initialized = False
-        self.offset = 0  # para el futuro, generacion de codigo
+        self.offset = 0        # Para la generación de código
         self.is_nullable = True
+    
     def __str__(self):
+        # Representación mejorada para variables.
         const_str = " (const)" if self.is_const else ""
-        return f"{self.name}: {self.type.name if self.type else '?'}{const_str}"
+        initialized_str = " (initialized)" if self.initialized else ""
+        type_name = self.type.name if self.type else '?'
+        return f"Var: {self.name}{const_str}{initialized_str} | Type: {type_name} | Scope: {self.scope_level}"
 
 class FunctionSymbol(Symbol):
     def __init__(self, name, return_type, scope_level, params=None):
@@ -31,8 +38,12 @@ class FunctionSymbol(Symbol):
         self.return_statements = []
         
     def __str__(self):
-        params = ", ".join([f"{p.name}: {p.type}" for p in self.parameters])
-        return f"function {self.name}({params}): {self.return_type}"
+        # Representación mejorada para funciones.
+        params_str = ", ".join([f"{p.name}: {p.type.name}" for p in self.parameters])
+        return_type_name = self.return_type.name if self.return_type else 'void'
+        
+        return (f"Func: {self.name}({params_str}) -> {return_type_name} | Scope: {self.scope_level} | "
+                f"Params: {len(self.parameters)} | Locals: {len(self.locals)}")
         
     def add_parameter(self, param):
         self.parameters.append(param)
@@ -46,6 +57,19 @@ class ClassSymbol(Symbol):
         self.parent_class = parent_class
         self.attributes = {}
         self.methods = {}
+        
+    def __str__(self):
+        # Representación mejorada para clases, mostrando sus miembros.
+        parent_str = f" extends {self.parent_class.name}" if self.parent_class else ""
+        header = f"Class: {self.name}{parent_str} | Scope: {self.scope_level}"
+        
+        attr_list = [f"  - {attr}" for attr in self.attributes.values()]
+        method_list = [f"  - {method}" for method in self.methods.values()]
+        
+        attributes_str = "\n".join(attr_list) if attr_list else "  - (no attributes)"
+        methods_str = "\n".join(method_list) if method_list else "  - (no methods)"
+        
+        return f"{header}\nAttributes:\n{attributes_str}\nMethods:\n{methods_str}"
         
     def add_attribute(self, attr):
         self.attributes[attr.name] = attr
