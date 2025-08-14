@@ -1,29 +1,32 @@
-// Suma de enteros
-let a: integer = 1 + 2;
-let b: integer = 3 * 4 - 5;
-let c: integer = (1 + 2) * 3;
+// Operaciones logicas validas
+let a: boolean = true && false;
+let b: boolean = true || false;
+let c: boolean = !true;
 
-// Variables con enteros
-let x: integer = 10;
-let y: integer = 20;
-let z: integer = x + y;
+// Operaciones logicas invalidas
+let d: boolean = 1 && true;      // Error
+let e: boolean = "hola" || false; // Error
+let f: boolean = !5;             // Error
 
-// Encadenamiento
-let result: integer = 1 + 2 + 3 + 4;
-let result2 = 1 + 2 + 3 + 4 + "a";
+// Comparaciones validas
+let g: boolean = 5 == 5;
+let h: boolean = "a" == "a";
+let i: boolean = null == null;
+let j: boolean = "texto" == null;
 
+// Comparaciones invalidas
+let k: boolean = 5 == "5";       // Error
+let l: boolean = true == 1;      // Error
+let m: boolean = null == 10;     // Error
 
-// Mezcla de integer y string
-let a1: integer = 1 + "a";           // Error
-let b1: integer = "hola" * 5;        // Error
-let c1: integer = 10 - true;         // Error
+// Operaciones relacionales validas
+let n: boolean = 5 < 10;
+let o: boolean = 10 >= 5;
 
-// Operacion con null
-let d1: integer = 10 + null;         // Error
+// Operaciones relacionales invalidas
+let p: boolean = 5 < "10";       // Error
+let q: boolean = true > false;   // Error
 
-// Encadenamiento con error en medio
-let e1: integer = 1 + "b" + 3;       // Error propagado, no repetir multiples veces
-
-// Variable sin tipo declarado, pero inicializacion invalida
-let f1 = 1 + "hola";          
-
+let pa: boolean = (1 == 1) != (2 > 3);
+let pb: boolean = "hola" == null;
+let ps: boolean = true && (5 == 5);

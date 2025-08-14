@@ -13,7 +13,14 @@ class SemanticVisitor(CompiscriptVisitor):
         
     # Helper methods
     def add_error(self, ctx, message):
-        line = ctx.start.line if ctx else "unknown"
+        # Manejar tanto ParserRuleContext como TerminalNode
+        if hasattr(ctx, 'start'):
+            line = ctx.start.line
+        elif hasattr(ctx, 'symbol'):
+            line = ctx.symbol.line
+        else:
+            line = "unknown"
+        
         self.errors.append(f"Error semántico. Línea {line}: {message}")
         #print(self.errors[-1])
         
@@ -49,8 +56,6 @@ class SemanticVisitor(CompiscriptVisitor):
 
         return INT_TYPE
 
-
-
     # Visitor para multiplicativeExpr (* / %)
     def visitMultiplicativeExpr(self, ctx):
         children = list(ctx.getChildren())
@@ -78,8 +83,151 @@ class SemanticVisitor(CompiscriptVisitor):
             # Pasamos el contexto de la expresión derecha, no el nodo terminal
             left_type = self.check_arithmetic(left_type, right_type, right_expr)
         return left_type
+    
+    # Funciones de verificación para operaciones lógicas
+    def check_logical(self, left_type, right_type, ctx):
+        from classes.types import BOOL_TYPE, ERROR_TYPE
+        
+        if left_type == ERROR_TYPE or right_type == ERROR_TYPE:
+            return ERROR_TYPE
+        
+        if left_type != BOOL_TYPE or right_type != BOOL_TYPE:
+            left_name = left_type.name if left_type else "None"
+            right_name = right_type.name if right_type else "None"
+            self.add_error(ctx, f"Operación lógica requiere operandos boolean, got {left_name} y {right_name}")
+            return ERROR_TYPE
+        
+        return BOOL_TYPE
+    
+    def visitPrimaryExpr(self, ctx):
+        if ctx.literalExpr():
+            return self.visit(ctx.literalExpr())
+        elif ctx.leftHandSide():
+            return self.visit(ctx.leftHandSide())
+        elif ctx.LPAREN():
+            return self.visit(ctx.expression())
+        else:
+            self.add_error(ctx, "Expresión primaria inválida")
+            return ERROR_TYPE
 
+    # Funciones de verificación para operaciones de comparación
+    def check_comparison(self, left_type, right_type, ctx):
+        
+        if left_type == ERROR_TYPE or right_type == ERROR_TYPE:
+            return ERROR_TYPE
+        
+        # Caso especial: comparación con null
+        if left_type == NULL_TYPE or right_type == NULL_TYPE:
+            if (left_type == NULL_TYPE and right_type == NULL_TYPE):
+                return BOOL_TYPE
+            if (left_type == NULL_TYPE and right_type not in (INT_TYPE, BOOL_TYPE)) or \
+            (right_type == NULL_TYPE and left_type not in (INT_TYPE, BOOL_TYPE)):
+                return BOOL_TYPE
+            self.add_error(ctx.parentCtx, f"No se puede comparar null con {right_type.name if left_type == NULL_TYPE else left_type.name}")
+            return ERROR_TYPE
+        
+        # Verificar compatibilidad de tipos
+        if left_type != right_type:
+            left_name = left_type.name if left_type else "None"
+            right_name = right_type.name if right_type else "None"
+            op = ctx.getText() if ctx else "=="
+            self.add_error(ctx.parentCtx, f"Operación de comparación '{op}' requiere tipos compatibles, got {left_name} y {right_name}")
+            return ERROR_TYPE
+        
+        return BOOL_TYPE
 
+    def check_relational(self, left_type, right_type, ctx):
+        
+        if left_type == ERROR_TYPE or right_type == ERROR_TYPE:
+            return ERROR_TYPE
+        
+        # Verificar que ambos sean enteros
+        if left_type != INT_TYPE or right_type != INT_TYPE:
+            left_name = left_type.name if left_type else "None"
+            right_name = right_type.name if right_type else "None"
+            op = ctx.getText() if ctx else "rel_op"
+            self.add_error(ctx.parentCtx, f"Operación relacional '{op}' requiere operandos integer, got {left_name} y {right_name}")
+            return ERROR_TYPE
+        
+        return BOOL_TYPE
+    
+    # Visitor para operaciones lógicas (&&, ||)
+    def visitLogicalOrExpr(self, ctx):
+        if ctx.getChildCount() == 1:
+            return self.visit(ctx.logicalAndExpr(0))
+        
+        left_type = self.visit(ctx.logicalAndExpr(0))
+        # Iterar por cada expresión adicional
+        for i in range(1, len(ctx.logicalAndExpr())):
+            right_expr = ctx.logicalAndExpr(i)
+            right_type = self.visit(right_expr)
+            left_type = self.check_logical(left_type, right_type, right_expr)
+        return left_type
+
+    def visitLogicalAndExpr(self, ctx):
+        if ctx.getChildCount() == 1:
+            return self.visit(ctx.equalityExpr(0))
+        
+        left_type = self.visit(ctx.equalityExpr(0))
+        # Iterar por cada expresión adicional
+        for i in range(1, len(ctx.equalityExpr())):
+            right_expr = ctx.equalityExpr(i)
+            right_type = self.visit(right_expr)
+            left_type = self.check_logical(left_type, right_type, right_expr)
+        return left_type
+
+    # Visitor para operaciones de igualdad (==, !=)
+    def visitEqualityExpr(self, ctx):
+        if ctx.getChildCount() == 1:
+            return self.visit(ctx.relationalExpr(0))
+        
+        left_type = self.visit(ctx.relationalExpr(0))
+        result_type = left_type
+        
+        for i in range(1, ctx.getChildCount(), 2):
+            if i+1 >= ctx.getChildCount():
+                break
+                
+            op_node = ctx.getChild(i)
+            right_expr = ctx.relationalExpr((i+1)//2)
+            right_type = self.visit(right_expr)
+            result_type = self.check_comparison(left_type, right_type, op_node)
+            left_type = right_type
+        
+        return result_type
+
+    def visitRelationalExpr(self, ctx):
+        if ctx.getChildCount() == 1:
+            return self.visit(ctx.additiveExpr(0))
+        
+        left_type = self.visit(ctx.additiveExpr(0))
+        result_type = left_type
+        
+        for i in range(1, ctx.getChildCount(), 2):
+            if i+1 >= ctx.getChildCount():
+                break
+                
+            op_node = ctx.getChild(i)
+            right_expr = ctx.additiveExpr((i+1)//2)
+            right_type = self.visit(right_expr)
+            result_type = self.check_relational(left_type, right_type, op_node)
+            left_type = right_type
+        
+        return result_type
+
+    # Actualizar el visitUnaryExpr para manejar el operador !
+    def visitUnaryExpr(self, ctx):
+        if ctx.NOT():
+            expr_type = self.visit(ctx.unaryExpr())
+            if expr_type != BOOL_TYPE and expr_type != ERROR_TYPE:
+                self.add_error(ctx, f"Operador '!' requiere operando booleano, got {expr_type.name}")
+                return ERROR_TYPE
+            return BOOL_TYPE
+        elif ctx.MINUS():
+            # Manejo existente para el operador -
+            return self.visitChildren(ctx)
+        else:
+            return self.visit(ctx.primaryExpr())
         
     def visitConstantDeclaration(self, ctx):
         const_name = ctx.Identifier().getText()

@@ -12,11 +12,19 @@ class Type:
     
     # Verifica compatibilidad de tipos en asignaciones
     def can_assign_to(self, other_type):
-        
         if self == NULL_TYPE:
             # null puede asignarse a cualquier tipo excepto primitivos no-nullables
             return other_type not in (INT_TYPE, BOOL_TYPE, VOID_TYPE)
-        return self == other_type or (self.parent and self.parent.can_assign_to(other_type))
+        
+        # Permitir comparaciones entre tipos idénticos
+        if self == other_type:
+            return True
+        
+        # Caso especial: boolean puede compararse con expresiones condicionales
+        if other_type == BOOL_TYPE and isinstance(self, (PrimitiveType, ArrayType)):
+            return True
+        
+        return False
 
 class PrimitiveType(Type):
     def __init__(self, name, width):
