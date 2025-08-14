@@ -29,6 +29,9 @@ class ArrayType(Type):
         self.element_type = element_type
         self.dimensions = dimensions
         self.width = element_type.width * reduce(lambda x, y: x*y, dimensions, 1)
+class ErrorType(Type):
+    def __init__(self):
+        super().__init__("error")
 
 # Tipos básicos
 INT_TYPE = PrimitiveType("integer", 4)
@@ -36,6 +39,7 @@ BOOL_TYPE = PrimitiveType("boolean", 1)
 STRING_TYPE = PrimitiveType("string", 16)
 VOID_TYPE = Type("void")
 NULL_TYPE = Type("null")
+ERROR_TYPE = ErrorType()
 
 TYPE_MAP = {
     "integer": INT_TYPE,

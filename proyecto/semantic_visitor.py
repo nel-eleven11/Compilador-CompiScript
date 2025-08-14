@@ -26,6 +26,60 @@ class SemanticVisitor(CompiscriptVisitor):
     # Visit methods
     def visitProgram(self, ctx):
         return self.visitChildren(ctx)
+    
+    # esta parte sera para las operacioens
+    # Esta función verifica operaciones aritméticas
+    def check_arithmetic(self, left_type, right_type, ctx):
+        from classes.types import INT_TYPE, ERROR_TYPE
+
+        # Si alguno es None, lo convertimos a ERROR_TYPE
+        if left_type is None or right_type is None:
+            return ERROR_TYPE
+
+        # Si alguno ya es ERROR_TYPE, simplemente propagamos sin imprimir error
+        if left_type == ERROR_TYPE or right_type == ERROR_TYPE:
+            return ERROR_TYPE
+
+        # Verificar que ambos sean enteros
+        if left_type != INT_TYPE or right_type != INT_TYPE:
+            left_name = left_type.name if left_type else "None"
+            right_name = right_type.name if right_type else "None"
+            self.add_error(ctx, f"Operación aritmética requiere operandos integer, got {left_name} y {right_name}")
+            return ERROR_TYPE
+
+        return INT_TYPE
+
+
+
+    # Visitor para multiplicativeExpr (* / %)
+    def visitMultiplicativeExpr(self, ctx):
+        children = list(ctx.getChildren())
+        if len(children) == 1:
+            return self.visit(ctx.unaryExpr(0))
+
+        left_type = self.visit(ctx.unaryExpr(0))
+        for i, op_node in enumerate(ctx.children[1::2]):
+            right_expr = ctx.unaryExpr(i + 1)
+            right_type = self.visit(right_expr)
+            # Pasamos el contexto de la expresión derecha
+            left_type = self.check_arithmetic(left_type, right_type, right_expr)
+        return left_type
+
+    # Visitor para additiveExpr (+ -)
+    def visitAdditiveExpr(self, ctx):
+        children = list(ctx.getChildren())
+        if len(children) == 1:
+            return self.visit(ctx.multiplicativeExpr(0))
+
+        left_type = self.visit(ctx.multiplicativeExpr(0))
+        for i, op_node in enumerate(ctx.children[1::2]):  # operadores
+            right_expr = ctx.multiplicativeExpr(i + 1)     # contexto de la expresión derecha
+            right_type = self.visit(right_expr)
+            # Pasamos el contexto de la expresión derecha, no el nodo terminal
+            left_type = self.check_arithmetic(left_type, right_type, right_expr)
+        return left_type
+
+
         
     def visitConstantDeclaration(self, ctx):
         const_name = ctx.Identifier().getText()
@@ -98,18 +152,19 @@ class SemanticVisitor(CompiscriptVisitor):
         return ArrayType(element_type, [len(ctx.expression())])
 
     def visitVariableDeclaration(self, ctx):
+
         var_name = ctx.Identifier().getText()
         declared_type = self.get_type_from_ctx(ctx.typeAnnotation().type_()) if ctx.typeAnnotation() else None
-        
+
         # Inferir tipo si no hay anotación
         initializer_type = self.visit(ctx.initializer().expression()) if ctx.initializer() else None
-        
+
         # Determinar el tipo final
         if declared_type:
             final_type = declared_type
         else:
             final_type = initializer_type if initializer_type else NULL_TYPE
-        
+
         symbol = VariableSymbol(
             name=var_name,
             type_=final_type,
@@ -119,16 +174,17 @@ class SemanticVisitor(CompiscriptVisitor):
 
         # Verificar asignación inicial
         if ctx.initializer():
-            expr_type = self.visit(ctx.initializer().expression())
-            if expr_type and not expr_type.can_assign_to(final_type):
+            expr_type = initializer_type
+            if expr_type != ERROR_TYPE and not expr_type.can_assign_to(final_type):
                 self.add_error(ctx, f"No se puede asignar {expr_type.name} a {final_type.name}")
 
         try:
             self.symbol_table.add_symbol(symbol)
         except Exception as e:
             self.add_error(ctx, str(e))
-            
+
         return self.visitChildren(ctx)
+
     
     #Versión flexible de verificación de tipos
     def check_assignment(self, source_type, target_type, is_nullable):
@@ -138,32 +194,34 @@ class SemanticVisitor(CompiscriptVisitor):
         return source_type.can_assign_to(target_type)
     
     def visitAssignment(self, ctx):
+
         # Obtener el símbolo de la variable
         var_name = ctx.Identifier().getText() if ctx.Identifier() else None
         if not var_name:
             return self.visitChildren(ctx)
-        
+
         var_symbol = self.symbol_table.lookup(var_name)
         if not var_symbol:
             self.add_error(ctx, f"Variable '{var_name}' no declarada")
-            return
-            
+            return ERROR_TYPE
+
         if var_symbol.is_const:
             self.add_error(ctx, f"No se puede reasignar la constante '{var_name}'")
-            return
-            
+            return ERROR_TYPE
+
         # Obtener tipo de la expresión
         expr_ctx = ctx.expression()[0] if isinstance(ctx.expression(), list) else ctx.expression()
         expr_type = self.visit(expr_ctx) if expr_ctx else None
-        
+
         # Regla especial: Permitir cambiar de null a tipo concreto
-        if var_symbol.type == NULL_TYPE and expr_type and expr_type != NULL_TYPE:
-            #print(f"Info: Variable '{var_name}' cambia de null a {expr_type.name}")
-            var_symbol.type = expr_type  # Actualizar el tipo dinámicamente
-        elif expr_type and not expr_type.can_assign_to(var_symbol.type):
+        if var_symbol.type == NULL_TYPE and expr_type and expr_type != NULL_TYPE and expr_type != ERROR_TYPE:
+            var_symbol.type = expr_type  # Actualizar tipo dinámicamente
+        elif expr_type != ERROR_TYPE and not expr_type.can_assign_to(var_symbol.type):
             self.add_error(ctx, f"No se puede asignar {expr_type.name} a {var_symbol.type.name}")
-        
-        return expr_type
+
+        # Siempre propagamos el tipo de la expresión para la verificación de errores en operaciones encadenadas
+        return expr_type if expr_type else ERROR_TYPE
+
     
     def visitFunctionDeclaration(self, ctx):
         func_name = ctx.Identifier().getText()

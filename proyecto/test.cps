@@ -1,50 +1,28 @@
-// Global constants and variables
-const PI: integer = 314;
-let greeting: string = "Hello, Compiscript!";
-let flag: boolean;
+// Suma de enteros
+let a: integer = 1 + 2;
+let b: integer = 3 * 4 - 5;
+let c: integer = (1 + 2) * 3;
 
-PI = 90; // error, no se peude reasignar
+// Variables con enteros
+let x: integer = 10;
+let y: integer = 20;
+let z: integer = x + y;
 
-const PI: integer = 3;
-const NAME = "Alice";  // Tipo inferido
-const FLAG: boolean = true;
+// Encadenamiento
+let result: integer = 1 + 2 + 3 + 4;
 
-const UNINITIALIZED;  // Error: falta inicializacion
-const BAD: integer = "text";  // Error: tipo incorrecto
-const NULL_CONST = null;  // Error: requiere tipo explicito
-let a1: integer = 10;
-let b1: string = "hola";
-let c1: boolean = true;
-let d1 = null;
 
-function greet(name: string) {
-    print("Hello " + name);
-    return "hi";
-}
+// Mezcla de integer y string
+let a1: integer = 1 + "a";           // Error
+let b1: integer = "hola" * 5;        // Error
+let c1: integer = 10 - true;         // Error
 
-function greet(name: string): string {
-    print("Hello " + name);
-    return "hi";
-}
+// Operacion con null
+let d1: integer = 10 + null;         // Error
 
-function greet_num(name: string): integer {
-    print("Hello " + name);
-    return "hi";
-}
+// Encadenamiento con error en medio
+let e1: integer = 1 + "b" + 3;       // Error propagado, no repetir multiples veces
 
-let a2: integer = 10;
-let b2: string = "hola";
-let c2: boolean = true;
-let d2 = null;
+// Variable sin tipo declarado, pero inicializacion invalida
+let f1 = 1 + "hola";          
 
-let z = null;      // Tipo null inicialmente
-z = "hola";        // a
-
-// Array de enteros explicito
-let nums: integer[] = [1, 2, 3];
-
-// Array de strings inferido
-let names = ["a", "b", "c"];
-
-// Array multidimensional
-let matrix: integer[][] = [[1, 2], [3, 4]];
