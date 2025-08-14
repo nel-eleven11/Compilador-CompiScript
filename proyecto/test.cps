@@ -10,6 +10,7 @@ let z: integer = x + y;
 
 // Encadenamiento
 let result: integer = 1 + 2 + 3 + 4;
+let result2 = 1 + 2 + 3 + 4 + "a";
 
 
 // Mezcla de integer y string

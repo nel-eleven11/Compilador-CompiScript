@@ -118,7 +118,7 @@ class SemanticVisitor(CompiscriptVisitor):
         except Exception as e:
             self.add_error(ctx, str(e))
             
-        return self.visitChildren(ctx)
+        return None
     
     def visitLiteralExpr(self, ctx):
         if ctx.NULL():
@@ -183,7 +183,7 @@ class SemanticVisitor(CompiscriptVisitor):
         except Exception as e:
             self.add_error(ctx, str(e))
 
-        return self.visitChildren(ctx)
+        return None
 
     
     #Versión flexible de verificación de tipos
