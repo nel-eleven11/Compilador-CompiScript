@@ -1,32 +1,22 @@
-// Operaciones logicas validas
-let a: boolean = true && false;
-let b: boolean = true || false;
-let c: boolean = !true;
+// Global constants and variables
 
-// Operaciones logicas invalidas
-let d: boolean = 1 && true;      // Error
-let e: boolean = "hola" || false; // Error
-let f: boolean = !5;             // Error
 
-// Comparaciones validas
-let g: boolean = 5 == 5;
-let h: boolean = "a" == "a";
-let i: boolean = null == null;
-let j: boolean = "texto" == null;
+let z = null;      // Tipo null inicialmente
+z = "hola";        // a
 
-// Comparaciones invalidas
-let k: boolean = 5 == "5";       // Error
-let l: boolean = true == 1;      // Error
-let m: boolean = null == 10;     // Error
+// Array de enteros explicito
+let nums: integer[] = [1, 2, 3];
 
-// Operaciones relacionales validas
-let n: boolean = 5 < 10;
-let o: boolean = 10 >= 5;
+// Array de strings inferido
+let names = ["a", "b", "c"];
 
-// Operaciones relacionales invalidas
-let p: boolean = 5 < "10";       // Error
-let q: boolean = true > false;   // Error
+// Array multidimensional
+let matrix: integer[][] = [[1, 2], [3, 4]];
 
-let pa: boolean = (1 == 1) != (2 > 3);
-let pb: boolean = "hola" == null;
-let ps: boolean = true && (5 == 5);
+
+
+// Suma de enteros
+let a: integer = 1 + 2;
+let b: integer = 3 * 4 - 5;
+let c: integer = (1 + 2) * 3;
+let v: integer = 3 * (1 + 2) ;
