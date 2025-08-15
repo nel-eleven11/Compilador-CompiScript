@@ -34,7 +34,10 @@ class SemanticVisitor(CompiscriptVisitor):
     def visitProgram(self, ctx):
         return self.visitChildren(ctx)
     
-    # esta parte sera para las operacioens
+    # ===============================================================================================
+    # OPERACIONES ARITMETICAS
+    #
+    #
     # Esta función verifica operaciones aritméticas
     def check_arithmetic(self, left_type, right_type, ctx):
         from classes.types import INT_TYPE, ERROR_TYPE
@@ -84,6 +87,12 @@ class SemanticVisitor(CompiscriptVisitor):
             left_type = self.check_arithmetic(left_type, right_type, right_expr)
         return left_type
     
+     # ===============================================================================================
+    
+    
+    # OPERACIONES LOGICAS
+    #
+    #
     # Funciones de verificación para operaciones lógicas
     def check_logical(self, left_type, right_type, ctx):
         from classes.types import BOOL_TYPE, ERROR_TYPE
@@ -229,6 +238,10 @@ class SemanticVisitor(CompiscriptVisitor):
         else:
             return self.visit(ctx.primaryExpr())
         
+    # ===============================================================================================
+    # REGLAS DE DECLARACIONES DE CONSTANTES Y VARIABLES
+    #
+    #    
     def visitConstantDeclaration(self, ctx):
         const_name = ctx.Identifier().getText()
         declared_type = self.get_type_from_ctx(ctx.typeAnnotation().type_()) if ctx.typeAnnotation() else None
@@ -254,10 +267,11 @@ class SemanticVisitor(CompiscriptVisitor):
             return
             
         # Crear símbolo
+        current_scope_id = self.symbol_table.scopes[-1].scope_id
         symbol = VariableSymbol(
             name=const_name,
             type_=declared_type,
-            scope_level=self.symbol_table.current_scope,
+            scope_id=current_scope_id,
             is_const=True
         )
         
@@ -313,10 +327,11 @@ class SemanticVisitor(CompiscriptVisitor):
         else:
             final_type = initializer_type if initializer_type else NULL_TYPE
 
+        current_scope_id = self.symbol_table.scopes[-1].scope_id
         symbol = VariableSymbol(
             name=var_name,
             type_=final_type,
-            scope_level=self.symbol_table.current_scope,
+            scope_id=current_scope_id,
             is_const=False
         )
 
@@ -370,7 +385,40 @@ class SemanticVisitor(CompiscriptVisitor):
         # Siempre propagamos el tipo de la expresión para la verificación de errores en operaciones encadenadas
         return expr_type if expr_type else ERROR_TYPE
 
+    # =========================================================================================================
+    # RREGLAS DE FUNCIONES
+    #
+    #
+    def visitBlock(self, ctx):
+        # Solo crear nuevo ámbito si no es función/clase (ya tienen su propio ámbito)
+        current_scope = self.symbol_table.scopes[-1]
+        if current_scope.scope_type not in ['function', 'class']:
+            self.symbol_table.enter_scope("block")
+        
+        result = self.visitChildren(ctx)
+        
+        if current_scope.scope_type not in ['function', 'class']:
+            self.symbol_table.exit_scope()
+        
+        return result
     
+    def visitIdentifierExpr(self, ctx):
+        name = ctx.getText()
+        symbol = self.symbol_table.lookup(name)
+        
+        if not symbol:
+            self.add_error(ctx, f"Identificador '{name}' no declarado")
+            return ERROR_TYPE
+        
+        # Verificar que el símbolo sea accesible (nueva lógica)
+        current_scope_ids = [scope.scope_id for scope in self.symbol_table.scopes]
+        if symbol.scope_id not in current_scope_ids:
+            if symbol.category == 'variable':
+                self.add_error(ctx, f"Variable '{name}' no es accesible en este ámbito")
+            return ERROR_TYPE
+            
+        return symbol.type
+        
     def visitFunctionDeclaration(self, ctx):
         func_name = ctx.Identifier().getText()
         return_type = self.get_type_from_ctx(ctx.type_()) if ctx.type_() else VOID_TYPE
@@ -378,11 +426,12 @@ class SemanticVisitor(CompiscriptVisitor):
         if return_type == VOID_TYPE and ctx.type_():
             self.add_error(ctx, f"Uso explícito de 'void' no permitido en funciones")
             return
-    
+        
+        current_scope_id = self.symbol_table.scopes[-1].scope_id
         func_symbol = FunctionSymbol(
             name=func_name,
             return_type=return_type,
-            scope_level=self.symbol_table.current_scope
+            scope_id=current_scope_id
         )
         
         # Registrar función en ámbito padre
@@ -392,11 +441,11 @@ class SemanticVisitor(CompiscriptVisitor):
             self.add_error(ctx, str(e))
             return
             
-        # Entrar en ámbito de función
+        # Entrar en ámbito de función (¡NUEVO: esto crea un ámbito permanente!)
         self.symbol_table.enter_scope("function")
         self.current_function = func_symbol
         
-        # Procesar parámetros
+        # Procesar parámetros (igual que antes)
         if ctx.parameters():
             for i, param_ctx in enumerate(ctx.parameters().parameter()):
                 param_name = param_ctx.Identifier().getText()
@@ -405,7 +454,7 @@ class SemanticVisitor(CompiscriptVisitor):
                 param_symbol = VariableSymbol(
                     name=param_name,
                     type_=param_type or VOID_TYPE,
-                    scope_level=self.symbol_table.current_scope,
+                    scope_id=current_scope_id,
                     is_const=False
                 )
                 
@@ -415,17 +464,18 @@ class SemanticVisitor(CompiscriptVisitor):
                 except Exception as e:
                     self.add_error(param_ctx, str(e))
         
-        # Procesar cuerpo
+        # Procesar cuerpo de la funcion
         self.visit(ctx.block())
         
         # Verificar retornos
         if return_type != VOID_TYPE and not func_symbol.return_statements:
             self.add_error(ctx, f"Función '{func_name}' debe retornar un valor")
-            
-        # Salir del ámbito
-        self.symbol_table.exit_scope()
+        
+        # Restaurar ámbito padre
+        self.symbol_table.exit_scope() 
         self.current_function = None
         
+        # ¡NO hacer exit_scope aquí!
         return None
     
     # En semantic_visitor.py

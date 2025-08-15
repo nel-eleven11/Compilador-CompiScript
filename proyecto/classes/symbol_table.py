@@ -1,21 +1,35 @@
 from .symbols import *
 from .scope import *
 
+# symbol_table.py
 class SymbolTable:
     def __init__(self):
-        self.scopes = [Scope(0, "global")]
-        self.current_scope = 0
+        self.scopes = []  # Pila de ámbitos activos
+        self.all_scopes = []  # Todos los ámbitos creados
+        self.next_scope_id = 0  # Contador para IDs únicos
+        self._init_global_scope()
+        
+    def _init_global_scope(self):
+        """Inicializa el ámbito global con ID 0"""
+        global_scope = Scope(0, "global")
+        self.scopes = [global_scope]
+        self.all_scopes = [global_scope]
+        self.next_scope_id = 1  # El próximo ID será 1
         
     def enter_scope(self, scope_type="block"):
-        self.current_scope += 1
-        self.scopes.append(Scope(self.current_scope, scope_type))
+        parent = self.scopes[-1] if self.scopes else None
+        new_scope = Scope(self.next_scope_id, scope_type, parent)
+        self.next_scope_id += 1  # Incrementa para el próximo ámbito
+        
+        self.scopes.append(new_scope)
+        self.all_scopes.append(new_scope)
         
     def exit_scope(self):
-        if self.current_scope > 0:
+        """Sale del ámbito actual (excepto global)"""
+        if len(self.scopes) > 1:  # No salir del ámbito global
             discarded = self.scopes.pop()
-            self.current_scope -= 1
             return discarded
-        raise Exception("Cannot exit global scope")
+        return None
         
     def add_symbol(self, symbol):
         self.scopes[-1].add(symbol)

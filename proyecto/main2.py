@@ -28,8 +28,8 @@ def main(argv):
         
     # 5. Mostrar tabla de símbolos (debug)
     print("\n=== Tabla de Símbolos ===")
-    for scope in analyzer.symbol_table.scopes:
-        print(f"\nÁmbito {scope.scope_level}:")
+    for scope in analyzer.symbol_table.all_scopes:  # aqui era all scopes, ups
+        print(f"\nÁmbito {scope.scope_id} ({scope.scope_type}):")
         for name, symbol in scope.symbols.items():
             print(f"  {symbol}")
 
