@@ -34,11 +34,14 @@ class SymbolTable:
     def add_symbol(self, symbol):
         self.scopes[-1].add(symbol)
         
+    # symbol_table.py
     def lookup(self, name, current_scope_only=False):
         """Busca un símbolo, opcionalmente solo en el ámbito actual"""
+        # Buscar primero en el ámbito actual
         if current_scope_only:
             return self.scopes[-1].lookup(name)
-            
+        
+        # Buscar en todos los ámbitos activos (desde el más interno hacia afuera)
         for scope in reversed(self.scopes):
             symbol = scope.lookup(name)
             if symbol is not None:
@@ -60,3 +63,7 @@ class SymbolTable:
                 return current.methods[member_name]
             current = current.parent_class
         return None
+    
+    #Verifica si un símbolo está declarado específicamente en el ámbito actual
+    def is_declared_in_current_scope(self, name):
+        return self.scopes[-1].lookup(name) is not None

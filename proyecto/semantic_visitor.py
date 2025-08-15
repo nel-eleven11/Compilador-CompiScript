@@ -244,6 +244,12 @@ class SemanticVisitor(CompiscriptVisitor):
     #    
     def visitConstantDeclaration(self, ctx):
         const_name = ctx.Identifier().getText()
+
+        # Verificar si ya está declarado en el ámbito actual
+        if self.symbol_table.is_declared_in_current_scope(const_name):
+            self.add_error(ctx, f"Constante '{const_name}' ya declarada en este ámbito")
+            return
+        
         declared_type = self.get_type_from_ctx(ctx.typeAnnotation().type_()) if ctx.typeAnnotation() else None
         
         # inicializacion obligatoria
@@ -316,6 +322,12 @@ class SemanticVisitor(CompiscriptVisitor):
     def visitVariableDeclaration(self, ctx):
 
         var_name = ctx.Identifier().getText()
+
+        # Verificar si ya está declarado en el ámbito actual
+        if self.symbol_table.is_declared_in_current_scope(var_name):
+            self.add_error(ctx, f"Variable '{var_name}' ya declarada en este ámbito")
+            return
+    
         declared_type = self.get_type_from_ctx(ctx.typeAnnotation().type_()) if ctx.typeAnnotation() else None
 
         # Inferir tipo si no hay anotación
@@ -357,18 +369,21 @@ class SemanticVisitor(CompiscriptVisitor):
         return source_type.can_assign_to(target_type)
     
     def visitAssignment(self, ctx):
-
-        # Obtener el símbolo de la variable
+        # Obtener el nombre de la variable
         var_name = ctx.Identifier().getText() if ctx.Identifier() else None
         if not var_name:
             return self.visitChildren(ctx)
 
-        var_symbol = self.symbol_table.lookup(var_name)
-        if not var_symbol:
+        # Buscar la variable en el ámbito actual primero, luego en superiores
+        symbol = self.symbol_table.lookup(var_name)
+        
+        # Si no se encuentra en ningún ámbito
+        if not symbol:
             self.add_error(ctx, f"Variable '{var_name}' no declarada")
             return ERROR_TYPE
 
-        if var_symbol.is_const:
+        # Verificar si es constante
+        if symbol.is_const:
             self.add_error(ctx, f"No se puede reasignar la constante '{var_name}'")
             return ERROR_TYPE
 
@@ -376,13 +391,10 @@ class SemanticVisitor(CompiscriptVisitor):
         expr_ctx = ctx.expression()[0] if isinstance(ctx.expression(), list) else ctx.expression()
         expr_type = self.visit(expr_ctx) if expr_ctx else None
 
-        # Regla especial: Permitir cambiar de null a tipo concreto
-        if var_symbol.type == NULL_TYPE and expr_type and expr_type != NULL_TYPE and expr_type != ERROR_TYPE:
-            var_symbol.type = expr_type  # Actualizar tipo dinámicamente
-        elif expr_type != ERROR_TYPE and not expr_type.can_assign_to(var_symbol.type):
-            self.add_error(ctx, f"No se puede asignar {expr_type.name} a {var_symbol.type.name}")
+        # Verificar compatibilidad de tipos
+        if expr_type != ERROR_TYPE and not expr_type.can_assign_to(symbol.type):
+            self.add_error(ctx, f"No se puede asignar {expr_type.name} a {symbol.type.name}")
 
-        # Siempre propagamos el tipo de la expresión para la verificación de errores en operaciones encadenadas
         return expr_type if expr_type else ERROR_TYPE
 
     # =========================================================================================================
@@ -408,13 +420,6 @@ class SemanticVisitor(CompiscriptVisitor):
         
         if not symbol:
             self.add_error(ctx, f"Identificador '{name}' no declarado")
-            return ERROR_TYPE
-        
-        # Verificar que el símbolo sea accesible (nueva lógica)
-        current_scope_ids = [scope.scope_id for scope in self.symbol_table.scopes]
-        if symbol.scope_id not in current_scope_ids:
-            if symbol.category == 'variable':
-                self.add_error(ctx, f"Variable '{name}' no es accesible en este ámbito")
             return ERROR_TYPE
             
         return symbol.type
