@@ -49,45 +49,53 @@ class MyVisitor(CompiscriptVisitor):
         print(f"Variable declarada: {var_name}")
         return self.visitChildren(ctx)
 
-def main(argv):
-    # archivo de input
-    input_stream = FileStream(argv[1])
-    
+def _run_common(input_stream, ast_path="ast.json"):
     # lexer
     lexer = CompiscriptLexer(input_stream)
     stream = CommonTokenStream(lexer)
-    
+
     print("\nTokens encontrados:")
-    stream.fill()  # Cargar todos los tokens
+    stream.fill()
     for token in stream.tokens:
         if token.channel != Token.HIDDEN_CHANNEL:
             print(f"{lexer.symbolicNames[token.type]} -> '{token.text}'")
-    
+
     # parser
     parser = CompiscriptParser(stream)
     tree = parser.program()
 
-    # guardando el ast en un JSON
+    # AST → JSON
     ast_json = tree_to_json(tree, parser, lexer)
-    with open('ast.json', 'w') as f:
-        json.dump(ast_json, f, indent=2)
+    with open(ast_path, "w", encoding="utf-8") as f:
+        json.dump(ast_json, f, indent=2, ensure_ascii=False)
+    print(f"Árbol sintáctico guardado en {ast_path}")
 
-    print("Árbol sintáctico guardado en ast.json")
-    
-    ### par verlo en consola
-    #print("\nRepresentación JSON del árbol:")
-    #print(json.dumps(ast_json, indent=2))
-    
-    ### esto es para printearlo en forma de texto sin json
-    #print("\nÁrbol de análisis sintáctico:")
-    #print(Trees.toStringTree(tree, None, parser))
-    
-    # arbol con visitor
+    # Visitor (mensajes van a stdout)
     visitor = MyVisitor()
     visitor.visit(tree)
+    return ast_json
 
-if __name__ == '__main__':
-    if len(sys.argv) < 2:
+
+def run_from_text(source_code: str, ast_path="ast.json"):
+    """API para el IDE: compila a partir del código en memoria."""
+    input_stream = InputStream(source_code)
+    return _run_common(input_stream, ast_path=ast_path)
+
+
+def run_from_file(file_path: str, ast_path="ast.json"):
+    """Compatibilidad CLI: compila a partir de un archivo."""
+    input_stream = FileStream(file_path, encoding="utf-8")
+    return _run_common(input_stream, ast_path=ast_path)
+
+
+# --- CLI tradicional (opcional) ---
+def main(argv=None):
+    argv = argv or sys.argv
+    if len(argv) < 2:
         print("Uso: python main.py <archivo_entrada>")
         sys.exit(1)
-    main(sys.argv)
+    run_from_file(argv[1])
+
+
+if __name__ == "__main__":
+    main()
