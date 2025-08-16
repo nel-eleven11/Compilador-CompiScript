@@ -17,11 +17,10 @@ AST_PATH = PROY_DIR / "ast.json"
 LOG_PATH = PROY_DIR / "log.txt"
 GRAMMAR = PROY_DIR / "Compiscript.g4"
 
-# Asegurar que 'proyecto' esté en el PYTHONPATH para importar main.py
+# PYTHONPATH
 if str(PROY_DIR) not in sys.path:
     sys.path.insert(0, str(PROY_DIR))
 
-# Import tardío 
 try:
     import main as cps_main  # proyecto/main.py
 except Exception:
@@ -40,7 +39,8 @@ if "upload_name" not in st.session_state:
     st.session_state.upload_name = None
 if "last_compile_ok" not in st.session_state:
     st.session_state.last_compile_ok = False
-
+if "errors" not in st.session_state:
+    st.session_state.errors = []   # ← aquí guardaremos analyzer.errors
 
 # ---------- Utilidades ----------
 def ensure_grammar_generated() -> str:
@@ -56,7 +56,6 @@ def ensure_grammar_generated() -> str:
     ]
     if all(p.exists() for p in needed):
         return ""
-
     if not GRAMMAR.exists():
         raise FileNotFoundError(f"No se encontró la gramática: {GRAMMAR}")
 
@@ -64,18 +63,10 @@ def ensure_grammar_generated() -> str:
     try:
         subprocess.run(["antlr4", "-version"], capture_output=True, text=True, check=True)
     except Exception:
-        raise RuntimeError(
-            "No se encontró el comando 'antlr4'. Instálalo o agrega al PATH."
-        )
+        raise RuntimeError("No se encontró el comando 'antlr4'. Instálalo o agrega al PATH.")
 
     cmd = ["antlr4", "-Dlanguage=Python3", "Compiscript.g4", "-visitor", "-no-listener"]
-    proc = subprocess.run(
-        cmd,
-        cwd=str(PROY_DIR),
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    proc = subprocess.run(cmd, cwd=str(PROY_DIR), capture_output=True, text=True, check=True)
     return f"=== ANTLR4 ===\n{proc.stdout}\n{proc.stderr}"
 
 # -------- Compilar --------
@@ -102,16 +93,20 @@ def compile_current_code() -> None:
 
     buffer = io.StringIO()
     try:
-        # 1) generar gramática si hace falta
+        # Generar gramática si hace falta
         antlr_log = ensure_grammar_generated()
-        # 2) ejecutar compilación capturando prints
+        # Ejecutar compilación capturando stdout (pero no errores, que vienen por retorno)
         with redirect_stdout(buffer):
-            cps_main.run_from_text(src, ast_path=str(AST_PATH))
+            result = cps_main.run_from_text(src, ast_path=str(AST_PATH))
+        # Guardar log sin errores (porque ya no se imprimen)
         out = (antlr_log + "\n" + buffer.getvalue()).strip()
         LOG_PATH.write_text(out, encoding="utf-8")
 
+        # Guardar errores en estado
+        st.session_state.errors = result.get("errors", []) or []
+
         st.session_state.output_text = (
-            "Compilación finalizada. Revisa 'Árbol Sintáctico' y 'Output Messages'."
+            "Compilación finalizada. Revisa 'Árbol Sintáctico', 'Errores' y 'Mensajes'."
         )
         st.session_state.locked = True
         st.session_state.last_compile_ok = True
@@ -122,6 +117,7 @@ def compile_current_code() -> None:
         st.session_state.output_text = msg
         st.session_state.locked = False
         st.session_state.last_compile_ok = False
+        st.session_state.errors = []
 
     except Exception as e:
         msg = f"Error durante la compilación: {e}"
@@ -129,6 +125,7 @@ def compile_current_code() -> None:
         st.session_state.output_text = msg
         st.session_state.locked = False
         st.session_state.last_compile_ok = False
+        st.session_state.errors = []
 
 # ------- Árbol Sintáctico ---------
 def render_ast_node(node: dict):
@@ -150,7 +147,6 @@ def render_ast_node(node: dict):
         for child in node.get("children", []):
             render_ast_node(child)
 
-
 # ---------- Barra superior ----------
 c1, csp, c3 = st.columns([4, 4, 4])
 
@@ -169,7 +165,7 @@ with c1:
             st.session_state.code_input = text
             st.session_state.upload_name = name
             st.session_state.output_text = f"Archivo cargado: {name}"
-            st.session_state.locked = False  # permite editar el código cargado
+            st.session_state.locked = False
 
 with c3:
     if st.button("Compilar", use_container_width=True):
@@ -178,12 +174,12 @@ with c3:
 # ---------- Selector de vista ----------
 vista = st.segmented_control(
     "Vista",
-    options=["Código", "Árbol Sintáctico", "Acciones", "Output Messages"],
+    options=["Código", "Árbol Sintáctico", "Acciones", "Mensajes", "Errores"],
     default=st.session_state.vista,
 )
 st.session_state.vista = vista
 
-
+# ---------- Vistas ----------
 if vista == "Código":
     filename_hint = f" ({st.session_state.upload_name})" if st.session_state.upload_name else ""
     if st.session_state.locked:
@@ -225,7 +221,7 @@ elif vista == "Acciones":
     st.caption("Próximamente: ejecutar pruebas, formatear código, limpiar artefactos, etc.")
     st.write("- (placeholder)")
 
-elif vista == "Output Messages":
+elif vista == "Mensajes":
     if LOG_PATH.exists():
         # lectura como texto plano, sin permitir edición
         content = LOG_PATH.read_text(encoding="utf-8")
@@ -233,4 +229,20 @@ elif vista == "Output Messages":
     else:
         st.info("Aún no hay log.txt. Compila para ver los mensajes.")
 
-st.markdown("</div>", unsafe_allow_html=True)
+elif vista == "Errores":
+    errs = st.session_state.errors or []
+    st.subheader("Errores del analizador")
+    if not errs:
+        st.success("Sin errores.")
+    else:
+        # Soporta listas de strings o de dicts
+        for i, e in enumerate(errs, start=1):
+            if isinstance(e, dict):
+                # intenta mostrar información común si existe
+                line = e.get("line")
+                col = e.get("column")
+                msg = e.get("message") or e.get("msg") or str(e)
+                where = f" (L{line}:C{col})" if line is not None else ""
+                st.error(f"{i}. {msg}{where}")
+            else:
+                st.error(f"{i}. {e}")

@@ -68,20 +68,22 @@ def _run_common(input_stream, ast_path="ast.json"):
 
     # resultados
     if analyzer.errors:
-        print("\n=== Errores encontrados ===")
-        for error in analyzer.errors:
-            print(error)
+        error = getattr(analyzer, "errors", [])        
     else:
         print("\nAnálisis semántico completado sin errores")
         
     # 5. Mostrar tabla de símbolos (debug)
-    print("\n=== Tabla de Símbolos ===")
-    for scope in analyzer.symbol_table.all_scopes:  # aqui era all scopes, ups
-        print(f"\nÁmbito {scope.scope_id} ({scope.scope_type}):")
-        for name, symbol in scope.symbols.items():
-            print(f"  {symbol}")
+    try:
+        print("\n=== Tabla de Símbolos ===")
+        for scope in analyzer.symbol_table.all_scopes:
+            print(f"\nÁmbito {scope.scope_id} ({scope.scope_type}):")
+            for name, symbol in scope.symbols.items():
+                print(f"  {symbol}")
+    except Exception:
+        # Si no existe symbol_table/all_scopes no reventar el proceso
+        pass
 
-    return ast_json
+    return {"ast": ast_json, "errors": error}
 
 
 def run_from_text(source_code: str, ast_path="ast.json"):
