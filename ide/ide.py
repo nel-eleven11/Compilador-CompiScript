@@ -10,7 +10,7 @@ import streamlit as st
 
 st.set_page_config(page_title="Mini IDE", layout="wide")
 
-# --- Rutas (según tu estructura de carpetas) ---
+# --- Rutas (según la estructura de carpetas) ---
 IDE_DIR = Path(__file__).resolve().parent
 PROY_DIR = IDE_DIR.parent / "proyecto"
 AST_PATH = PROY_DIR / "ast.json"
@@ -21,7 +21,7 @@ GRAMMAR = PROY_DIR / "Compiscript.g4"
 if str(PROY_DIR) not in sys.path:
     sys.path.insert(0, str(PROY_DIR))
 
-# Import tardío para que falle bonito si algo no está
+# Import tardío 
 try:
     import main as cps_main  # proyecto/main.py
 except Exception:
@@ -77,7 +77,7 @@ def ensure_grammar_generated() -> str:
     )
     return f"=== ANTLR4 ===\n{proc.stdout}\n{proc.stderr}"
 
-
+# -------- Compilar --------
 def compile_current_code() -> None:
     """
     Compila el código del editor con el pipeline de proyecto/main.py.
@@ -129,7 +129,7 @@ def compile_current_code() -> None:
         st.session_state.locked = False
         st.session_state.last_compile_ok = False
 
-
+# ------- Árbol Sintáctico ---------
 def render_ast_node(node: dict):
     """
     Expander recursivo: padre -> hijos.
