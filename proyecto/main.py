@@ -2,7 +2,7 @@ import sys
 from antlr4 import *
 from CompiscriptLexer import CompiscriptLexer
 from CompiscriptParser import CompiscriptParser
-from CompiscriptVisitor import CompiscriptVisitor
+from semantic_visitor import SemanticVisitor
 from antlr4.tree.Trees import Trees
 import json
 
@@ -42,13 +42,6 @@ def tree_to_json(node, parser, lexer=None):
     
     return result
 
-class MyVisitor(CompiscriptVisitor):
-    # metodos del visitor
-    def visitVariableDeclaration(self, ctx):
-        var_name = ctx.Identifier().getText()
-        print(f"Variable declarada: {var_name}")
-        return self.visitChildren(ctx)
-
 def _run_common(input_stream, ast_path="ast.json"):
     # lexer
     lexer = CompiscriptLexer(input_stream)
@@ -70,9 +63,24 @@ def _run_common(input_stream, ast_path="ast.json"):
         json.dump(ast_json, f, indent=2, ensure_ascii=False)
     print(f"Árbol sintáctico guardado en {ast_path}")
 
-    # Visitor (mensajes van a stdout)
-    visitor = MyVisitor()
-    visitor.visit(tree)
+    analyzer = SemanticVisitor()
+    analyzer.visit(tree)
+
+    # resultados
+    if analyzer.errors:
+        print("\n=== Errores encontrados ===")
+        for error in analyzer.errors:
+            print(error)
+    else:
+        print("\nAnálisis semántico completado sin errores")
+        
+    # 5. Mostrar tabla de símbolos (debug)
+    print("\n=== Tabla de Símbolos ===")
+    for scope in analyzer.symbol_table.all_scopes:  # aqui era all scopes, ups
+        print(f"\nÁmbito {scope.scope_id} ({scope.scope_type}):")
+        for name, symbol in scope.symbols.items():
+            print(f"  {symbol}")
+
     return ast_json
 
 

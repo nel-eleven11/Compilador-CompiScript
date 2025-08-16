@@ -52,6 +52,7 @@ def ensure_grammar_generated() -> str:
         PROY_DIR / "CompiscriptLexer.py",
         PROY_DIR / "CompiscriptParser.py",
         PROY_DIR / "CompiscriptVisitor.py",
+        PROY_DIR / "semantic_visitor.py",
     ]
     if all(p.exists() for p in needed):
         return ""
