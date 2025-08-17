@@ -13,18 +13,19 @@ class Symbol:
         return f"{self.category.capitalize()} {self.name}: {type_name}, scope: {self.scope_id}"
 
 class VariableSymbol(Symbol):
-    def __init__(self, name, type_, scope_id, is_const=False):
+    def __init__(self, name, type_, scope_id, is_const=False, is_type_inferred=False):
         super().__init__(name, type_, "variable", scope_id)
         self.is_const = is_const
         self.initialized = False
-        self.offset = 0        # Para la generación de código
+        self.offset = 0
         self.is_nullable = True
+        self.is_type_inferred = is_type_inferred  # Nuevo atributo
     
     def __str__(self):
         const_str = " (const)" if self.is_const else ""
-        initialized_str = " (initialized)" if self.initialized else ""
-        type_name = self.type.name if self.type else '?'
-        return f"Var: {self.name}{const_str}{initialized_str} | Type: {type_name} | Scope: {self.scope_id}"
+        type_str = f"Type: {self.type.name}" if self.type else 'Type: ?'
+        inferred_str = " (inferred)" if self.is_type_inferred else ""
+        return f"Var: {self.name}{const_str}{inferred_str} | {type_str} | Scope: {self.scope_id}"
 
 class FunctionSymbol(Symbol):
     def __init__(self, name, return_type, scope_id, params=None):

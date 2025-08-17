@@ -264,9 +264,10 @@ class SemanticVisitor(CompiscriptVisitor):
         
         # si notiene tipo declarado, inferirlo del inicializador
         if not declared_type:
-            if initializer_type == NULL_TYPE:
-                self.add_error(ctx, f"Constante '{const_name}' requiere tipo explícito cuando se inicializa con null")
-                return
+            # Comentado de momento por const si deberia de poder inicialzarse con null, si no tiene tipo
+            #if initializer_type == NULL_TYPE:
+            #    self.add_error(ctx, f"Constante '{const_name}' requiere tipo explícito cuando se inicializa con null")
+            #    return
             declared_type = initializer_type
         
         # compatibilidad de tipos
@@ -322,31 +323,30 @@ class SemanticVisitor(CompiscriptVisitor):
         return ArrayType(element_type, [len(ctx.expression())])
 
     def visitVariableDeclaration(self, ctx):
-
         var_name = ctx.Identifier().getText()
-
-        # Verificar si ya está declarado en el ámbito actual
+        
         if self.symbol_table.is_declared_in_current_scope(var_name):
             self.add_error(ctx, f"Variable '{var_name}' ya declarada en este ámbito")
             return
-    
+        
         declared_type = self.get_type_from_ctx(ctx.typeAnnotation().type_()) if ctx.typeAnnotation() else None
-
-        # Inferir tipo si no hay anotación
         initializer_type = self.visit(ctx.initializer().expression()) if ctx.initializer() else None
-
-        # Determinar el tipo final
+        
+        # Determinar tipo y si fue inferido
         if declared_type:
             final_type = declared_type
+            is_type_inferred = False
         else:
             final_type = initializer_type if initializer_type else NULL_TYPE
+            is_type_inferred = True  # Tipo inferido, no explícito
 
         current_scope_id = self.symbol_table.scopes[-1].scope_id
         symbol = VariableSymbol(
             name=var_name,
             type_=final_type,
             scope_id=current_scope_id,
-            is_const=False
+            is_const=False,
+            is_type_inferred=is_type_inferred  # Pasar nuevo atributo
         )
 
         # Verificar asignación inicial
@@ -393,9 +393,18 @@ class SemanticVisitor(CompiscriptVisitor):
         expr_ctx = ctx.expression()[0] if isinstance(ctx.expression(), list) else ctx.expression()
         expr_type = self.visit(expr_ctx) if expr_ctx else None
 
-        # Verificar compatibilidad de tipos
-        if expr_type != ERROR_TYPE and not expr_type.can_assign_to(symbol.type):
-            self.add_error(ctx, f"No se puede asignar {expr_type.name} a {symbol.type.name}")
+        # Caso especial: variable con tipo inferido inicializado con null
+        if (symbol.type == NULL_TYPE and 
+            symbol.is_type_inferred and
+            expr_type != NULL_TYPE and 
+            expr_type != VOID_TYPE and 
+            expr_type != ERROR_TYPE):
+            # Actualizar el tipo de la variable dinámicamente
+            symbol.type = expr_type
+        else:
+            # Verificación normal de tipos
+            if expr_type != ERROR_TYPE and not expr_type.can_assign_to(symbol.type):
+                self.add_error(ctx, f"No se puede asignar {expr_type.name} a {symbol.type.name}")
 
         return expr_type if expr_type else ERROR_TYPE
 
