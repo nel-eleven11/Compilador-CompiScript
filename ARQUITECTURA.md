@@ -42,3 +42,10 @@ Este proyecto es un compilador para el lenguaje CompisCript, una variante de Typ
 * Hay archivos .cps con casos de prueba, el archivo principal de prueba es program.cps
 * Ejecutar con main2.py para verificar detección de errores
 * Los errores semánticos se muestran con formato: Línea X: Mensaje de error
+
+## Carpet test_files
+Dentro de este se tienen varios archivos de prueba para poder testear los casos que deben ser validos al momento de realizar el análisis semántico. Dichos archivos se pueden correr desde el IDE o bien corriendo el siguiente comando desde la carpeto "proyecto":
+
+```bash
+python -m tests.test_semantic
+```

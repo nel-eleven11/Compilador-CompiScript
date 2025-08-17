@@ -21,3 +21,19 @@ antlr4 -Dlanguage=Python3 Compiscript.g4 -visitor -no-listener
 ```bash
 streamlit run ide.py
 ```
+
+### Correr pruebas
+
+#### Corriendo todas las pruebas
+Desde la carpeta proyecto
+
+```bash
+python -m tests.test_semantic
+```
+
+#### Corriendo un archivo especifico
+Desde la carpeta proyecto
+
+```bash
+python main2.py arhivo_especifico.cps  
+```
