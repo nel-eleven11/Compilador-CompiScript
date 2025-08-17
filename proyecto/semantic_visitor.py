@@ -10,6 +10,8 @@ class SemanticVisitor(CompiscriptVisitor):
         self.errors = []
         self.current_function = None
         self.current_class = None
+        self.in_loop = False
+        self.loop_depth = 0
         
     # Helper methods
     def add_error(self, ctx, message):
@@ -432,6 +434,11 @@ class SemanticVisitor(CompiscriptVisitor):
             self.add_error(ctx, f"Uso explícito de 'void' no permitido en funciones")
             return
         
+        # CHECK FOR DUPLICATE FUNCTIONS IN CURRENT SCOPE
+        if self.symbol_table.is_declared_in_current_scope(func_name):
+            self.add_error(ctx, f"Función '{func_name}' ya declarada en este ámbito")
+            return
+        
         current_scope_id = self.symbol_table.scopes[-1].scope_id
         func_symbol = FunctionSymbol(
             name=func_name,
@@ -446,11 +453,11 @@ class SemanticVisitor(CompiscriptVisitor):
             self.add_error(ctx, str(e))
             return
             
-        # Entrar en ámbito de función (¡NUEVO: esto crea un ámbito permanente!)
+        # Entrar en ámbito de función
         self.symbol_table.enter_scope("function")
         self.current_function = func_symbol
         
-        # Procesar parámetros (igual que antes)
+        # Procesar parámetros
         if ctx.parameters():
             for i, param_ctx in enumerate(ctx.parameters().parameter()):
                 param_name = param_ctx.Identifier().getText()
@@ -472,15 +479,25 @@ class SemanticVisitor(CompiscriptVisitor):
         # Procesar cuerpo de la funcion
         self.visit(ctx.block())
         
-        # Verificar retornos
-        if return_type != VOID_TYPE and not func_symbol.return_statements:
-            self.add_error(ctx, f"Función '{func_name}' debe retornar un valor")
+        # VALIDATE RETURN TYPE - Check if all return statements match declared type
+        if return_type != VOID_TYPE:
+            if not func_symbol.return_statements:
+                self.add_error(ctx, f"Función '{func_name}' debe retornar un valor")
+            else:
+                # Check each return statement type
+                for ret_type in func_symbol.return_statements:
+                    if ret_type != ERROR_TYPE and ret_type != return_type:
+                        self.add_error(ctx, f"Tipo de retorno inconsistente en función '{func_name}'. Esperado: {return_type.name}, encontrado: {ret_type.name}")
+        else:
+            # VOID functions should not have return values
+            for ret_type in func_symbol.return_statements:
+                if ret_type != VOID_TYPE and ret_type != ERROR_TYPE:
+                    self.add_error(ctx, f"Función void '{func_name}' no debe retornar valor")
         
         # Restaurar ámbito padre
         self.symbol_table.exit_scope() 
         self.current_function = None
         
-        # ¡NO hacer exit_scope aquí!
         return None
     
     # En semantic_visitor.py
@@ -499,3 +516,183 @@ class SemanticVisitor(CompiscriptVisitor):
         
         self.current_function.return_statements.append(expr_type)
         return expr_type
+    
+    # FUNCTION CALL VALIDATION
+    def visitCallExpr(self, ctx):
+        # Get function name from the primary expression
+        func_ctx = ctx.getParent()
+        while func_ctx and not hasattr(func_ctx, 'primaryAtom'):
+            func_ctx = func_ctx.getParent()
+        
+        if not func_ctx or not func_ctx.primaryAtom():
+            return ERROR_TYPE
+            
+        func_name = func_ctx.primaryAtom().getText()
+        func_symbol = self.symbol_table.lookup(func_name)
+        
+        if not func_symbol:
+            self.add_error(ctx, f"Función '{func_name}' no declarada")
+            return ERROR_TYPE
+            
+        if not isinstance(func_symbol, FunctionSymbol):
+            self.add_error(ctx, f"'{func_name}' no es una función")
+            return ERROR_TYPE
+        
+        # Get arguments
+        args = []
+        if ctx.arguments():
+            for arg_expr in ctx.arguments().expression():
+                arg_type = self.visit(arg_expr)
+                args.append(arg_type)
+        
+        # Validate number of arguments
+        expected_params = len(func_symbol.parameters)
+        actual_args = len(args)
+        
+        if actual_args != expected_params:
+            self.add_error(ctx, f"Función '{func_name}' espera {expected_params} argumentos, pero recibió {actual_args}")
+            return func_symbol.return_type
+        
+        # Validate argument types
+        for i, (param, arg_type) in enumerate(zip(func_symbol.parameters, args)):
+            if arg_type != ERROR_TYPE and not arg_type.can_assign_to(param.type):
+                self.add_error(ctx, f"Argumento {i+1} de función '{func_name}': esperado {param.type.name}, encontrado {arg_type.name}")
+        
+        return func_symbol.return_type
+    
+    # CONTROL FLOW VALIDATION
+    def visitIfStatement(self, ctx):
+        condition_type = self.visit(ctx.expression())
+        if condition_type != BOOL_TYPE and condition_type != ERROR_TYPE:
+            self.add_error(ctx.expression(), f"Condición de 'if' debe ser boolean, encontrado {condition_type.name}")
+        
+        # Visit the blocks
+        self.visit(ctx.block(0))  # if block
+        if ctx.block(1):  # else block
+            self.visit(ctx.block(1))
+        
+        return None
+    
+    def visitWhileStatement(self, ctx):
+        condition_type = self.visit(ctx.expression())
+        if condition_type != BOOL_TYPE and condition_type != ERROR_TYPE:
+            self.add_error(ctx.expression(), f"Condición de 'while' debe ser boolean, encontrado {condition_type.name}")
+        
+        # Enter loop context
+        prev_in_loop = self.in_loop
+        self.in_loop = True
+        self.loop_depth += 1
+        
+        self.visit(ctx.block())
+        
+        # Exit loop context
+        self.loop_depth -= 1
+        self.in_loop = prev_in_loop or self.loop_depth > 0
+        
+        return None
+    
+    def visitDoWhileStatement(self, ctx):
+        condition_type = self.visit(ctx.expression())
+        if condition_type != BOOL_TYPE and condition_type != ERROR_TYPE:
+            self.add_error(ctx.expression(), f"Condición de 'do-while' debe ser boolean, encontrado {condition_type.name}")
+        
+        # Enter loop context
+        prev_in_loop = self.in_loop
+        self.in_loop = True
+        self.loop_depth += 1
+        
+        self.visit(ctx.block())
+        
+        # Exit loop context
+        self.loop_depth -= 1
+        self.in_loop = prev_in_loop or self.loop_depth > 0
+        
+        return None
+    
+    def visitForStatement(self, ctx):
+        # Create new scope for for loop
+        self.symbol_table.enter_scope("for")
+        
+        # Visit initialization
+        if ctx.variableDeclaration():
+            self.visit(ctx.variableDeclaration())
+        elif ctx.assignment():
+            self.visit(ctx.assignment())
+        
+        # Visit condition
+        if ctx.expression(0):  # condition expression
+            condition_type = self.visit(ctx.expression(0))
+            if condition_type != BOOL_TYPE and condition_type != ERROR_TYPE:
+                self.add_error(ctx.expression(0), f"Condición de 'for' debe ser boolean, encontrado {condition_type.name}")
+        
+        # Visit increment
+        if ctx.expression(1):  # increment expression
+            self.visit(ctx.expression(1))
+        
+        # Enter loop context
+        prev_in_loop = self.in_loop
+        self.in_loop = True
+        self.loop_depth += 1
+        
+        self.visit(ctx.block())
+        
+        # Exit loop context
+        self.loop_depth -= 1
+        self.in_loop = prev_in_loop or self.loop_depth > 0
+        
+        # Exit for scope
+        self.symbol_table.exit_scope()
+        
+        return None
+    
+    def visitForeachStatement(self, ctx):
+        # Enter loop context
+        prev_in_loop = self.in_loop
+        self.in_loop = True
+        self.loop_depth += 1
+        
+        # Create new scope for foreach
+        self.symbol_table.enter_scope("foreach")
+        
+        # Visit the iterable expression
+        iterable_type = self.visit(ctx.expression())
+        
+        # Check if it's an array type
+        if isinstance(iterable_type, ArrayType):
+            # Create iterator variable
+            iterator_name = ctx.Identifier().getText()
+            iterator_symbol = VariableSymbol(
+                name=iterator_name,
+                type_=iterable_type.element_type,
+                scope_id=self.symbol_table.scopes[-1].scope_id,
+                is_const=False
+            )
+            
+            try:
+                self.symbol_table.add_symbol(iterator_symbol)
+            except Exception as e:
+                self.add_error(ctx, str(e))
+        elif iterable_type != ERROR_TYPE:
+            self.add_error(ctx.expression(), f"foreach requiere un array, encontrado {iterable_type.name}")
+        
+        self.visit(ctx.block())
+        
+        # Exit foreach scope
+        self.symbol_table.exit_scope()
+        
+        # Exit loop context
+        self.loop_depth -= 1
+        self.in_loop = prev_in_loop or self.loop_depth > 0
+        
+        return None
+    
+    # BREAK AND CONTINUE VALIDATION
+    def visitBreakStatement(self, ctx):
+        if not self.in_loop:
+            self.add_error(ctx, "break solo puede usarse dentro de un bucle")
+        return None
+    
+    def visitContinueStatement(self, ctx):
+        if not self.in_loop:
+            self.add_error(ctx, "continue solo puede usarse dentro de un bucle")
+        return None
