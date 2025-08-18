@@ -41,39 +41,38 @@ class SemanticVisitor(CompiscriptVisitor):
     #
     #
     # Esta función verifica operaciones aritméticas
-    def check_arithmetic(self, left_type, right_type, ctx):
-        from classes.types import INT_TYPE, ERROR_TYPE
-
+    def check_additive_operation(self, left_type, right_type, operator, ctx):
+        
         # Si alguno es None, lo convertimos a ERROR_TYPE
         if left_type is None or right_type is None:
             return ERROR_TYPE
 
-        # Si alguno ya es ERROR_TYPE, simplemente propagamos sin imprimir error
+        # Si alguno ya es ERROR_TYPE, propagamos sin error adicional
         if left_type == ERROR_TYPE or right_type == ERROR_TYPE:
             return ERROR_TYPE
 
-        # Verificar que ambos sean enteros
-        if left_type != INT_TYPE or right_type != INT_TYPE:
-            left_name = left_type.name if left_type else "None"
-            right_name = right_type.name if right_type else "None"
-            self.add_error(ctx, f"Operación aritmética requiere operandos integer, got {left_name} y {right_name}")
-            return ERROR_TYPE
+        # Determinar el operador
+        op = operator.getText() if hasattr(operator, 'getText') else operator
 
-        return INT_TYPE
+        # Caso concatenación: operador + con strings
+        if op == '+' and left_type == STRING_TYPE and right_type == STRING_TYPE:
+            return STRING_TYPE
+            
+        # Caso suma aritmética
+        if op == '+' or op == '-':
+            if left_type == INT_TYPE and right_type == INT_TYPE:
+                return INT_TYPE
+            else:
+                left_name = left_type.name
+                right_name = right_type.name
+                self.add_error(ctx, 
+                    f"Operación '{op}' requiere operandos integer, got {left_name} y {right_name}")
+                return ERROR_TYPE
 
-    # Visitor para multiplicativeExpr (* / %)
-    def visitMultiplicativeExpr(self, ctx):
-        children = list(ctx.getChildren())
-        if len(children) == 1:
-            return self.visit(ctx.unaryExpr(0))
+        # Operador no reconocido
+        self.add_error(ctx, f"Operador no soportado: {op}")
+        return ERROR_TYPE
 
-        left_type = self.visit(ctx.unaryExpr(0))
-        for i, op_node in enumerate(ctx.children[1::2]):
-            right_expr = ctx.unaryExpr(i + 1)
-            right_type = self.visit(right_expr)
-            # Pasamos el contexto de la expresión derecha
-            left_type = self.check_arithmetic(left_type, right_type, right_expr)
-        return left_type
 
     # Visitor para additiveExpr (+ -)
     def visitAdditiveExpr(self, ctx):
@@ -82,13 +81,61 @@ class SemanticVisitor(CompiscriptVisitor):
             return self.visit(ctx.multiplicativeExpr(0))
 
         left_type = self.visit(ctx.multiplicativeExpr(0))
-        for i, op_node in enumerate(ctx.children[1::2]):  # operadores
-            right_expr = ctx.multiplicativeExpr(i + 1)     # contexto de la expresión derecha
+        
+        # Procesar cada operador y su expresión derecha
+        for i in range(len(ctx.children) // 2):
+            operator = ctx.children[2*i + 1]  # El operador está en posición impar
+            right_expr = ctx.multiplicativeExpr(i + 1)
             right_type = self.visit(right_expr)
-            # Pasamos el contexto de la expresión derecha, no el nodo terminal
-            left_type = self.check_arithmetic(left_type, right_type, right_expr)
+            
+            left_type = self.check_additive_operation(
+                left_type, 
+                right_type, 
+                operator,  # Pasa el operador
+                right_expr
+            )
+        
         return left_type
     
+    def visitMultiplicativeExpr(self, ctx):
+        children = list(ctx.getChildren())
+        if len(children) == 1:
+            return self.visit(ctx.unaryExpr(0))
+
+        left_type = self.visit(ctx.unaryExpr(0))
+        
+        # Procesar cada operador y su expresión derecha
+        for i in range(len(ctx.children) // 2):
+            operator = ctx.children[2*i + 1]  # El operador está en posición impar
+            right_expr = ctx.unaryExpr(i + 1)
+            right_type = self.visit(right_expr)
+            
+            left_type = self.check_arithmetic(  # Mantenemos función original para * / %
+                left_type, 
+                right_type, 
+                right_expr
+            )
+        
+        return left_type
+
+    # Mantenemos check_arithmetic solo para * / %
+    def check_arithmetic(self, left_type, right_type, ctx):
+        from classes.types import INT_TYPE, ERROR_TYPE
+
+        if left_type is None or right_type is None:
+            return ERROR_TYPE
+
+        if left_type == ERROR_TYPE or right_type == ERROR_TYPE:
+            return ERROR_TYPE
+
+        # Verificar que ambos sean enteros
+        if left_type != INT_TYPE or right_type != INT_TYPE:
+            left_name = left_type.name
+            right_name = right_type.name
+            self.add_error(ctx, f"Operación aritmética requiere operandos integer, got {left_name} y {right_name}")
+            return ERROR_TYPE
+
+        return INT_TYPE
      # ===============================================================================================
     
     
