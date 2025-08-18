@@ -900,38 +900,31 @@ class SemanticVisitor(CompiscriptVisitor):
 
     def visitLeftHandSide(self, ctx: CompiscriptParser.LeftHandSideContext):
 
-        #Valida:
-        #- indexación sobre arrays con índice integer
-        #- acceso a atributos/métodos en objetos (dot)
-        #- invocaciones a funciones y métodos
-
-        # ---- Base (primaryAtom) ----
         base = ctx.primaryAtom()
 
-        current_type: Type | None = None       # tipo "de valor" actual
-        pending_func: FunctionSymbol | None = None  # función/método pendiente de invocar
+        current_type = None
+        pending_func = None  # FunctionSymbol pendiente de invocar
 
-        # Identifier, New, This (según alternativas etiquetadas)
-        if base.Identifier():  # IdentifierExpr
-            name = base.getText()
+        # ---------------- Base ----------------
+        if isinstance(base, CompiscriptParser.IdentifierExprContext):
+            name = base.Identifier().getText()
             sym = self.symbol_table.lookup(name)
             if isinstance(sym, VariableSymbol):
                 current_type = sym.type
             elif isinstance(sym, FunctionSymbol):
                 pending_func = sym
             elif isinstance(sym, ClassSymbol):
-                # Usar nombres de clase como valor directo no es válido
-                self._report(base, f"Uso inválido del nombre de clase '{name}' como valor")
+                self.add_error(base, f"Uso inválido del nombre de clase '{name}' como valor")
                 return ERROR_TYPE
             else:
-                self._report(base, f"Identificador '{name}' no declarado")
+                self.add_error(base, f"Identificador '{name}' no declarado")
                 return ERROR_TYPE
 
-        elif base.NEW():  # NewExpr
+        elif isinstance(base, CompiscriptParser.NewExprContext):
             class_name = base.Identifier().getText()
             cls = self._lookup_class(class_name)
             if not cls:
-                self._report(base, f"Clase '{class_name}' no declarada")
+                self.add_error(base, f"Clase '{class_name}' no declarada")
                 return ERROR_TYPE
 
             # Tipos de argumentos reales
@@ -945,38 +938,34 @@ class SemanticVisitor(CompiscriptVisitor):
             if ctor:
                 expected = len(ctor.parameters)
                 if len(arg_types) != expected:
-                    self._report(base, f"Constructor de '{class_name}' espera {expected} argumentos, recibió {len(arg_types)}")
+                    self.add_error(base, f"Constructor de '{class_name}' espera {expected} argumentos, recibió {len(arg_types)}")
                 else:
                     for i, (param, arg_t) in enumerate(zip(ctor.parameters, arg_types), start=1):
                         if arg_t != ERROR_TYPE and not arg_t.can_assign_to(param.type):
-                            self._report(base, f"Argumento {i} del constructor de '{class_name}': esperado {param.type.name}, encontrado {arg_t.name}")
-            else:
-                # Si no hay constructor declarado, solo aceptar 0 args
-                if len(arg_types) != 0:
-                    self._report(base, f"Clase '{class_name}' no define constructor; se esperaban 0 argumentos")
+                            self.add_error(base, f"Argumento {i} del constructor de '{class_name}': esperado {param.type.name}, encontrado {arg_t.name}")
+            elif len(arg_types) != 0:
+                self.add_error(base, f"Clase '{class_name}' no define constructor; se esperaban 0 argumentos")
 
             current_type = self._class_type(class_name)
 
-        elif base.THIS():  # ThisExpr
+        elif isinstance(base, CompiscriptParser.ThisExprContext):
             if not self.current_class:
-                self._report(base, "Uso de 'this' fuera de una clase")
+                self.add_error(base, "Uso de 'this' fuera de una clase")
                 return ERROR_TYPE
             current_type = self._class_type(self.current_class.name)
 
         else:
-            # Fallback
             return self.visitChildren(ctx)
 
-        # ---- Sufijos encadenados ----
+        # --------------- Sufijos encadenados ---------------
         suffixes = list(ctx.suffixOp())
 
         i = 0
         while i < len(suffixes):
             s = suffixes[i]
 
-            # Llamada: (...)          — puede ser a función libre o método pendiente
-            if s.LPAREN():
-                # Tipos de argumentos reales
+            # Llamada: (...)
+            if isinstance(s, CompiscriptParser.CallExprContext):
                 arg_types = []
                 if s.arguments():
                     for e in s.arguments().expression():
@@ -986,99 +975,84 @@ class SemanticVisitor(CompiscriptVisitor):
                     # Validar llamada a esa función/método
                     expected = len(pending_func.parameters)
                     if len(arg_types) != expected:
-                        self._report(s, f"Función '{pending_func.name}' espera {expected} argumentos, recibió {len(arg_types)}")
-                        current_type = pending_func.return_type
+                        self.add_error(s, f"Función '{pending_func.name}' espera {expected} argumentos, recibió {len(arg_types)}")
                     else:
-                        for idx, (param, arg_t) in enumerate(zip(pending_func.parameters, arg_types), start=1):
+                        for j, (param, arg_t) in enumerate(zip(pending_func.parameters, arg_types), start=1):
                             if arg_t != ERROR_TYPE and not arg_t.can_assign_to(param.type):
-                                self._report(s, f"Argumento {idx} de '{pending_func.name}': esperado {param.type.name}, encontrado {arg_t.name}")
-                        current_type = pending_func.return_type
-                    pending_func = None  # consumida la invocación
-
+                                self.add_error(s, f"Argumento {j} de '{pending_func.name}': esperado {param.type.name}, encontrado {arg_t.name}")
+                    current_type = pending_func.return_type
+                    pending_func = None
                 else:
-                    # Llamando algo que no es función
-                    self._report(s, "Intento de invocar una expresión que no es función")
+                    self.add_error(s, "Intento de invocar una expresión que no es función")
                     current_type = ERROR_TYPE
 
-            # Indexación: [expr]      — debe ser array y el índice integer
-            elif s.LBRACK():
-                # validar índice
-                if not current_type or not isinstance(current_type, ArrayType):
-                    self._report(s, "Indexación sobre expresión que no es un arreglo")
+            # Indexación: [expr]
+            elif isinstance(s, CompiscriptParser.IndexExprContext):
+                if not isinstance(current_type, ArrayType):
+                    self.add_error(s, "Indexación sobre expresión que no es un arreglo")
                     current_type = ERROR_TYPE
                 else:
                     idx_t = self.visit(s.expression())
                     if idx_t != ERROR_TYPE and idx_t != INT_TYPE:
-                        self._report(s.expression(), f"El índice de un arreglo debe ser integer, encontrado {idx_t.name}")
-                    # Resultado: tipo del elemento
+                        self.add_error(s.expression(), f"El índice de un arreglo debe ser integer, encontrado {idx_t.name}")
                     current_type = current_type.element_type
-                # nada pendiente
                 pending_func = None
 
-            # Propiedad: .ident       — atributo o método
-            elif s.DOT():
+            # Acceso a propiedad: .ident
+            elif isinstance(s, CompiscriptParser.PropertyAccessExprContext):
                 member = s.Identifier().getText()
-
-                if not current_type:
-                    self._report(s, "Acceso a propiedad inválido")
+                if isinstance(current_type, ArrayType):
+                    self.add_error(s, f"El arreglo no posee miembro '{member}'")
                     current_type = ERROR_TYPE
-
-                elif isinstance(current_type, ArrayType):
-                    # (opcional) soporte a 'length' podría añadirse aquí
-                    self._report(s, f"El arreglo no posee miembro '{member}'")
-                    current_type = ERROR_TYPE
-
+                    pending_func = None
                 else:
-                    # Debe ser instancia de clase
-                    cls = self._lookup_class(current_type.name)
+                    cls = self._lookup_class(current_type.name) if current_type else None
                     if not cls:
-                        self._report(s, f"No se puede acceder a miembro '{member}' de tipo no-clase '{current_type.name}'")
+                        self.add_error(s, f"No se puede acceder a miembro '{member}' de '{current_type.name if current_type else '?'}'")
                         current_type = ERROR_TYPE
+                        pending_func = None
                     else:
-                        # ¿Atributo?
+                        # ¿atributo?
                         attr = cls.attributes.get(member)
                         if attr:
                             current_type = attr.type
                             pending_func = None
                         else:
-                            # ¿Método?
+                            # ¿método?
                             m = cls.methods.get(member)
                             if m:
-                                # Si el siguiente sufijo es llamada, la consumimos aquí
-                                if i + 1 < len(suffixes) and suffixes[i + 1].LPAREN():
-                                    next_call = suffixes[i + 1]
-                                    arg_types = []
-                                    if next_call.arguments():
-                                        for e in next_call.arguments().expression():
-                                            arg_types.append(self.visit(e))
-                                    expected = len(m.parameters)
-                                    if len(arg_types) != expected:
-                                        self._report(next_call, f"Método '{member}' espera {expected} argumentos, recibió {len(arg_types)}")
+                                # ¿se invoca justo después?
+                                if i + 1 < len(suffixes) and isinstance(suffixes[i + 1], CompiscriptParser.CallExprContext):
+                                    call = suffixes[i + 1]
+                                    args = []
+                                    if call.arguments():
+                                        for e in call.arguments().expression():
+                                            args.append(self.visit(e))
+                                    if len(args) != len(m.parameters):
+                                        self.add_error(call, f"Método '{member}' espera {len(m.parameters)} argumentos, recibió {len(args)}")
                                     else:
-                                        for idx, (param, arg_t) in enumerate(zip(m.parameters, arg_types), start=1):
+                                        for j, (param, arg_t) in enumerate(zip(m.parameters, args), start=1):
                                             if arg_t != ERROR_TYPE and not arg_t.can_assign_to(param.type):
-                                                self._report(next_call, f"Argumento {idx} de método '{member}': esperado {param.type.name}, encontrado {arg_t.name}")
+                                                self.add_error(call, f"Argumento {j} de método '{member}': esperado {param.type.name}, encontrado {arg_t.name}")
                                     current_type = m.return_type
-                                    i += 1  # consumir llamada
+                                    i += 1  # consumir el CallExpr
                                     pending_func = None
                                 else:
-                                    # método referenciado sin invocación: no soportado como valor
-                                    self._report(s, f"Se esperaba invocar al método '{member}'")
+                                    self.add_error(s, f"Se esperaba invocar al método '{member}'")
                                     current_type = ERROR_TYPE
                                     pending_func = None
                             else:
-                                self._report(s, f"Miembro '{member}' no existe en clase '{cls.name}'")
+                                self.add_error(s, f"Miembro '{member}' no existe en clase '{cls.name}'")
                                 current_type = ERROR_TYPE
-
             else:
-                # Cualquier otro caso (no debería ocurrir)
                 current_type = ERROR_TYPE
+                pending_func = None
 
             i += 1
 
         # Si queda una función pendiente sin invocar en la cola: error
         if pending_func:
-            self._report(ctx, f"Se esperaba invocar a la función '{pending_func.name}'")
+            self.add_error(ctx, f"Se esperaba invocar a la función '{pending_func.name}'")
             return ERROR_TYPE
 
         return current_type if current_type else ERROR_TYPE
