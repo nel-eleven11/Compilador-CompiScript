@@ -3,6 +3,7 @@ from classes.types import *
 from classes.symbols import *
 from classes.symbol_table import SymbolTable
 from CompiscriptVisitor import CompiscriptVisitor
+from CompiscriptParser import CompiscriptParser
 
 class SemanticVisitor(CompiscriptVisitor):
     def __init__(self):
@@ -407,6 +408,10 @@ class SemanticVisitor(CompiscriptVisitor):
         except Exception as e:
             self.add_error(ctx, str(e))
 
+        # Si se está dentro de una clase, registrar como atributo
+        if self.current_class:
+            self.current_class.add_attribute(symbol)
+
         return None
 
     
@@ -553,6 +558,10 @@ class SemanticVisitor(CompiscriptVisitor):
         # Restaurar ámbito padre
         self.symbol_table.exit_scope() 
         self.current_function = None
+
+        # Si está dentro de clase y no es 'constructor', agregar a los métodos
+        if self.current_class:
+            self.current_class.add_method(func_symbol)
         
         return None
     
@@ -752,3 +761,324 @@ class SemanticVisitor(CompiscriptVisitor):
         if not self.in_loop:
             self.add_error(ctx, "continue solo puede usarse dentro de un bucle")
         return None
+
+    # =========================================================================================================
+    # REGLAS DE CLASES Y OBJETOS
+    #
+    #
+
+    def _class_type(self, class_name: str) -> Type:
+    #Crea un Type para instancias de clase (comparación por nombre).
+        return Type(class_name)
+
+    def _lookup_class(self, name: str):
+        sym = self.symbol_table.lookup(name)
+        return sym if isinstance(sym, ClassSymbol) else None
+
+    def _report(self, ctx, msg):
+        self.add_error(ctx, msg)
+
+    def visitThisExpr(self, ctx):
+        if not self.current_class:
+            self.add_error(ctx, "Uso de 'this' fuera de una clase")
+            return ERROR_TYPE
+        return self._class_type(self.current_class.name)
+
+    def visitClassDeclaration(self, ctx: CompiscriptParser.ClassDeclarationContext):
+        class_name = ctx.Identifier(0).getText()
+
+        # Evitar redeclaración en el mismo ámbito
+        if self.symbol_table.is_declared_in_current_scope(class_name):
+            self.add_error(ctx, f"Clase '{class_name}' ya declarada en este ámbito")
+            return None
+
+        # Herencia (opcional)
+        parent_cls = None
+        if ctx.Identifier(1):
+            parent_name = ctx.Identifier(1).getText()
+            parent_cls = self._lookup_class(parent_name)
+            if not parent_cls:
+                self.add_error(ctx, f"Clase padre '{parent_name}' no declarada")
+
+        cls_sym = ClassSymbol(class_name, scope_id=self.symbol_table.scopes[-1].scope_id, parent_class=parent_cls)
+
+        # Registrar clase en el ámbito actual (global usualmente)
+        try:
+            self.symbol_table.add_symbol(cls_sym)
+        except Exception as e:
+            self.add_error(ctx, str(e))
+            return None
+
+        # Entrar en ámbito de clase
+        self.symbol_table.enter_scope("class")
+        prev_cls = self.current_class
+        self.current_class = cls_sym
+
+        # Procesar miembros
+        for member in ctx.classMember():
+            if member.functionDeclaration():
+                # Reutilizamos visitFunctionDeclaration pero añadimos a methods
+                func_ctx = member.functionDeclaration()
+                func_name = func_ctx.Identifier().getText()
+
+                # Constructor: nombre especial 'constructor'
+                if func_name == "constructor":
+                    # El constructor no debe declarar tipo de retorno
+                    if func_ctx.type_():
+                        self.add_error(func_ctx, "El constructor no debe declarar tipo de retorno")
+                    # Crear símbolo con retorno VOID explícito
+                    current_scope_id = self.symbol_table.scopes[-1].scope_id
+                    func_symbol = FunctionSymbol("constructor", VOID_TYPE, current_scope_id)
+                    # Guardar antes de entrar al cuerpo para permitir recursión indirecta si aplica
+                    cls_sym.add_method(func_symbol)
+                    try:
+                        self.symbol_table.add_symbol(func_symbol)
+                    except Exception as e:
+                        self.add_error(func_ctx, str(e))
+
+                    # Entrar a ámbito de función y parámetros
+                    self.symbol_table.enter_scope("function")
+                    self.current_function = func_symbol
+                    if func_ctx.parameters():
+                        for p in func_ctx.parameters().parameter():
+                            p_name = p.Identifier().getText()
+                            p_type = self.get_type_from_ctx(p.type_() if p.type_() else None) or VOID_TYPE
+                            p_sym = VariableSymbol(p_name, p_type, scope_id=self.symbol_table.scopes[-1].scope_id, is_const=False)
+                            func_symbol.add_parameter(p_sym)
+                            try:
+                                self.symbol_table.add_symbol(p_sym)
+                            except Exception as e:
+                                self.add_error(p, str(e))
+
+                    # Procesar cuerpo
+                    self.visit(func_ctx.block())
+
+                    # Validación: los constructores no retornan valor
+                    for ret_t in func_symbol.return_statements:
+                        if ret_t != VOID_TYPE and ret_t != ERROR_TYPE:
+                            self.add_error(func_ctx, "El constructor no debe retornar un valor")
+
+                    self.symbol_table.exit_scope()
+                    self.current_function = None
+
+                else:
+                    # Método normal: delegar a visitFunctionDeclaration y luego adjuntarlo a la clase
+                    before_funcs = len(self.symbol_table.scopes[-1].symbols)
+                    self.visit(func_ctx)
+                    # Recuperar el último FunctionSymbol agregado en este scope
+                    # (forma simple: buscar por nombre)
+                    added = self.symbol_table.lookup(func_name, current_scope_only=True)
+                    if isinstance(added, FunctionSymbol):
+                        cls_sym.add_method(added)
+
+            elif member.variableDeclaration():
+                # Atributos: reutilizamos visitVariableDeclaration y lo adjuntamos
+                before = len(self.symbol_table.scopes[-1].symbols)
+                self.visit(member.variableDeclaration())
+                # Adjuntar el último símbolo agregado por nombre
+                var_name = member.variableDeclaration().Identifier().getText()
+                sym = self.symbol_table.lookup(var_name, current_scope_only=True)
+                if isinstance(sym, VariableSymbol):
+                    cls_sym.add_attribute(sym)
+
+            elif member.constantDeclaration():
+                self.visit(member.constantDeclaration())
+                const_name = member.constantDeclaration().Identifier().getText()
+                sym = self.symbol_table.lookup(const_name, current_scope_only=True)
+                if isinstance(sym, VariableSymbol):
+                    cls_sym.add_attribute(sym)
+
+        # Salir de la clase
+        self.symbol_table.exit_scope()
+        self.current_class = prev_cls
+        return None
+
+    # =========================================================================================================
+    # REGLAS DE LISTAS Y ESTRUCTURAS DE DATOS
+    #
+    #
+
+    def visitLeftHandSide(self, ctx: CompiscriptParser.LeftHandSideContext):
+
+        #Valida:
+        #- indexación sobre arrays con índice integer
+        #- acceso a atributos/métodos en objetos (dot)
+        #- invocaciones a funciones y métodos
+
+        # ---- Base (primaryAtom) ----
+        base = ctx.primaryAtom()
+
+        current_type: Type | None = None       # tipo "de valor" actual
+        pending_func: FunctionSymbol | None = None  # función/método pendiente de invocar
+
+        # Identifier, New, This (según alternativas etiquetadas)
+        if base.Identifier():  # IdentifierExpr
+            name = base.getText()
+            sym = self.symbol_table.lookup(name)
+            if isinstance(sym, VariableSymbol):
+                current_type = sym.type
+            elif isinstance(sym, FunctionSymbol):
+                pending_func = sym
+            elif isinstance(sym, ClassSymbol):
+                # Usar nombres de clase como valor directo no es válido
+                self._report(base, f"Uso inválido del nombre de clase '{name}' como valor")
+                return ERROR_TYPE
+            else:
+                self._report(base, f"Identificador '{name}' no declarado")
+                return ERROR_TYPE
+
+        elif base.NEW():  # NewExpr
+            class_name = base.Identifier().getText()
+            cls = self._lookup_class(class_name)
+            if not cls:
+                self._report(base, f"Clase '{class_name}' no declarada")
+                return ERROR_TYPE
+
+            # Tipos de argumentos reales
+            arg_types = []
+            if base.arguments():
+                for e in base.arguments().expression():
+                    arg_types.append(self.visit(e))
+
+            # Verificación de constructor
+            ctor = cls.methods.get("constructor")
+            if ctor:
+                expected = len(ctor.parameters)
+                if len(arg_types) != expected:
+                    self._report(base, f"Constructor de '{class_name}' espera {expected} argumentos, recibió {len(arg_types)}")
+                else:
+                    for i, (param, arg_t) in enumerate(zip(ctor.parameters, arg_types), start=1):
+                        if arg_t != ERROR_TYPE and not arg_t.can_assign_to(param.type):
+                            self._report(base, f"Argumento {i} del constructor de '{class_name}': esperado {param.type.name}, encontrado {arg_t.name}")
+            else:
+                # Si no hay constructor declarado, solo aceptar 0 args
+                if len(arg_types) != 0:
+                    self._report(base, f"Clase '{class_name}' no define constructor; se esperaban 0 argumentos")
+
+            current_type = self._class_type(class_name)
+
+        elif base.THIS():  # ThisExpr
+            if not self.current_class:
+                self._report(base, "Uso de 'this' fuera de una clase")
+                return ERROR_TYPE
+            current_type = self._class_type(self.current_class.name)
+
+        else:
+            # Fallback
+            return self.visitChildren(ctx)
+
+        # ---- Sufijos encadenados ----
+        suffixes = list(ctx.suffixOp())
+
+        i = 0
+        while i < len(suffixes):
+            s = suffixes[i]
+
+            # Llamada: (...)          — puede ser a función libre o método pendiente
+            if s.LPAREN():
+                # Tipos de argumentos reales
+                arg_types = []
+                if s.arguments():
+                    for e in s.arguments().expression():
+                        arg_types.append(self.visit(e))
+
+                if pending_func:
+                    # Validar llamada a esa función/método
+                    expected = len(pending_func.parameters)
+                    if len(arg_types) != expected:
+                        self._report(s, f"Función '{pending_func.name}' espera {expected} argumentos, recibió {len(arg_types)}")
+                        current_type = pending_func.return_type
+                    else:
+                        for idx, (param, arg_t) in enumerate(zip(pending_func.parameters, arg_types), start=1):
+                            if arg_t != ERROR_TYPE and not arg_t.can_assign_to(param.type):
+                                self._report(s, f"Argumento {idx} de '{pending_func.name}': esperado {param.type.name}, encontrado {arg_t.name}")
+                        current_type = pending_func.return_type
+                    pending_func = None  # consumida la invocación
+
+                else:
+                    # Llamando algo que no es función
+                    self._report(s, "Intento de invocar una expresión que no es función")
+                    current_type = ERROR_TYPE
+
+            # Indexación: [expr]      — debe ser array y el índice integer
+            elif s.LBRACK():
+                # validar índice
+                if not current_type or not isinstance(current_type, ArrayType):
+                    self._report(s, "Indexación sobre expresión que no es un arreglo")
+                    current_type = ERROR_TYPE
+                else:
+                    idx_t = self.visit(s.expression())
+                    if idx_t != ERROR_TYPE and idx_t != INT_TYPE:
+                        self._report(s.expression(), f"El índice de un arreglo debe ser integer, encontrado {idx_t.name}")
+                    # Resultado: tipo del elemento
+                    current_type = current_type.element_type
+                # nada pendiente
+                pending_func = None
+
+            # Propiedad: .ident       — atributo o método
+            elif s.DOT():
+                member = s.Identifier().getText()
+
+                if not current_type:
+                    self._report(s, "Acceso a propiedad inválido")
+                    current_type = ERROR_TYPE
+
+                elif isinstance(current_type, ArrayType):
+                    # (opcional) soporte a 'length' podría añadirse aquí
+                    self._report(s, f"El arreglo no posee miembro '{member}'")
+                    current_type = ERROR_TYPE
+
+                else:
+                    # Debe ser instancia de clase
+                    cls = self._lookup_class(current_type.name)
+                    if not cls:
+                        self._report(s, f"No se puede acceder a miembro '{member}' de tipo no-clase '{current_type.name}'")
+                        current_type = ERROR_TYPE
+                    else:
+                        # ¿Atributo?
+                        attr = cls.attributes.get(member)
+                        if attr:
+                            current_type = attr.type
+                            pending_func = None
+                        else:
+                            # ¿Método?
+                            m = cls.methods.get(member)
+                            if m:
+                                # Si el siguiente sufijo es llamada, la consumimos aquí
+                                if i + 1 < len(suffixes) and suffixes[i + 1].LPAREN():
+                                    next_call = suffixes[i + 1]
+                                    arg_types = []
+                                    if next_call.arguments():
+                                        for e in next_call.arguments().expression():
+                                            arg_types.append(self.visit(e))
+                                    expected = len(m.parameters)
+                                    if len(arg_types) != expected:
+                                        self._report(next_call, f"Método '{member}' espera {expected} argumentos, recibió {len(arg_types)}")
+                                    else:
+                                        for idx, (param, arg_t) in enumerate(zip(m.parameters, arg_types), start=1):
+                                            if arg_t != ERROR_TYPE and not arg_t.can_assign_to(param.type):
+                                                self._report(next_call, f"Argumento {idx} de método '{member}': esperado {param.type.name}, encontrado {arg_t.name}")
+                                    current_type = m.return_type
+                                    i += 1  # consumir llamada
+                                    pending_func = None
+                                else:
+                                    # método referenciado sin invocación: no soportado como valor
+                                    self._report(s, f"Se esperaba invocar al método '{member}'")
+                                    current_type = ERROR_TYPE
+                                    pending_func = None
+                            else:
+                                self._report(s, f"Miembro '{member}' no existe en clase '{cls.name}'")
+                                current_type = ERROR_TYPE
+
+            else:
+                # Cualquier otro caso (no debería ocurrir)
+                current_type = ERROR_TYPE
+
+            i += 1
+
+        # Si queda una función pendiente sin invocar en la cola: error
+        if pending_func:
+            self._report(ctx, f"Se esperaba invocar a la función '{pending_func.name}'")
+            return ERROR_TYPE
+
+        return current_type if current_type else ERROR_TYPE
