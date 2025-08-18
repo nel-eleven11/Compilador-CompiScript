@@ -8,7 +8,7 @@ from contextlib import redirect_stdout
 
 import streamlit as st
 
-st.set_page_config(page_title="Mini IDE", layout="wide")
+st.set_page_config(page_title="CompiScript IDE", layout="wide")
 
 # --- Rutas (según la estructura de carpetas) ---
 IDE_DIR = Path(__file__).resolve().parent
