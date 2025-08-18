@@ -67,3 +67,7 @@ class SymbolTable:
     #Verifica si un símbolo está declarado específicamente en el ámbito actual
     def is_declared_in_current_scope(self, name):
         return self.scopes[-1].lookup(name) is not None
+    
+    def lookup_in_current_scope(self, name):
+        """Busca un símbolo únicamente en el ámbito actual"""
+        return self.scopes[-1].lookup(name)

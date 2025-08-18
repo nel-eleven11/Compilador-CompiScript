@@ -21,6 +21,22 @@ def analyze_file(file_path):
     
     return analyzer
 
+def analyze_code(code_string):
+    """Analiza un string de código y devuelve el visitor con los resultados"""
+    input_stream = InputStream(code_string)
+    lexer = CompiscriptLexer(input_stream)
+    stream = CommonTokenStream(lexer)
+    parser = CompiscriptParser(stream)
+    
+    # Análisis sintáctico
+    tree = parser.program()
+    
+    # Análisis semántico
+    analyzer = SemanticVisitor()
+    analyzer.visit(tree)
+    
+    return analyzer
+
 def main(argv):
     if len(argv) < 2:
         print("Uso: python main.py <archivo_entrada>")
