@@ -13,6 +13,8 @@ class SemanticVisitor(CompiscriptVisitor):
         self.current_class = None
         self.in_loop = False
         self.loop_depth = 0
+        self.warnings = []  # Para advertencias de código muerto
+        self.unreachable_code = False  # Flag para detectar código muerto
         
     # Helper methods
     def add_error(self, ctx, message):
@@ -26,6 +28,60 @@ class SemanticVisitor(CompiscriptVisitor):
         
         self.errors.append(f"Error semántico. Línea {line}: {message}")
         #print(self.errors[-1])
+    
+    def add_warning(self, ctx, message):
+        # Agregar advertencias para código muerto u otros problemas no críticos
+        if hasattr(ctx, 'start'):
+            line = ctx.start.line
+        elif hasattr(ctx, 'symbol'):
+            line = ctx.symbol.line
+        else:
+            line = "unknown"
+        
+        self.warnings.append(f"Advertencia. Línea {line}: {message}")
+    
+    def check_unreachable_code(self, ctx, description="código"):
+        """Verifica si el código es inalcanzable y agrega advertencia"""
+        if self.unreachable_code:
+            self.add_warning(ctx, f"Código muerto: {description} nunca se ejecutará")
+            return True
+        return False
+    
+    def validate_semantic_expression(self, ctx, expr_type, operation, operands=None):
+        """Valida que una expresión tenga sentido semántico"""
+        if expr_type == ERROR_TYPE:
+            return False
+            
+        # Validar operaciones aritméticas sin sentido
+        if operation in ['add', 'subtract', 'multiply', 'divide', 'modulo']:
+            if expr_type not in [INT_TYPE, ERROR_TYPE]:
+                self.add_error(ctx, f"Operación aritmética '{operation}' con resultado no numérico ({expr_type.name})")
+                return False
+        
+        # Validar comparaciones sin sentido
+        if operation in ['compare']:
+            if operands and len(operands) == 2:
+                left, right = operands
+                if left != right and left != NULL_TYPE and right != NULL_TYPE:
+                    self.add_warning(ctx, f"Comparación entre tipos diferentes: {left.name} y {right.name}")
+        
+        # Validar asignaciones sin sentido
+        if operation == 'assignment':
+            if operands and len(operands) == 2:
+                target_type, value_type = operands
+                if value_type != ERROR_TYPE and not value_type.can_assign_to(target_type):
+                    return False
+        
+        return True
+    
+    def check_division_by_zero(self, ctx, right_operand_ctx):
+        """Verifica división por cero en tiempo de compilación si es posible"""
+        if hasattr(right_operand_ctx, 'Literal'):
+            literal = right_operand_ctx.Literal()
+            if literal and literal.getText() == '0':
+                self.add_warning(ctx, "Posible división por cero")
+                return True
+        return False
         
     def get_type_from_ctx(self, type_ctx):
         if not type_ctx:
@@ -35,6 +91,11 @@ class SemanticVisitor(CompiscriptVisitor):
     
     # Visit methods
     def visitProgram(self, ctx):
+        return self.visitChildren(ctx)
+    
+    def visitStatement(self, ctx):
+        # Verificar código muerto antes de procesar cualquier statement
+        self.check_unreachable_code(ctx, "statement")
         return self.visitChildren(ctx)
     
     # ===============================================================================================
@@ -57,12 +118,17 @@ class SemanticVisitor(CompiscriptVisitor):
 
         # Caso concatenación: operador + con strings
         if op == '+' and left_type == STRING_TYPE and right_type == STRING_TYPE:
-            return STRING_TYPE
+            result_type = STRING_TYPE
+            self.validate_semantic_expression(ctx, result_type, 'concatenation', [left_type, right_type])
+            return result_type
             
         # Caso suma aritmética
         if op == '+' or op == '-':
             if left_type == INT_TYPE and right_type == INT_TYPE:
-                return INT_TYPE
+                result_type = INT_TYPE
+                operation_name = 'add' if op == '+' else 'subtract'
+                self.validate_semantic_expression(ctx, result_type, operation_name)
+                return result_type
             else:
                 left_name = left_type.name
                 right_name = right_type.name
@@ -297,7 +363,9 @@ class SemanticVisitor(CompiscriptVisitor):
 
         # Verificar si ya está declarado en el ámbito actual
         if self.symbol_table.is_declared_in_current_scope(const_name):
-            self.add_error(ctx, f"Constante '{const_name}' ya declarada en este ámbito")
+            existing_symbol = self.symbol_table.lookup_in_current_scope(const_name)
+            symbol_type = "constante" if existing_symbol and hasattr(existing_symbol, 'is_const') and existing_symbol.is_const else "variable"
+            self.add_error(ctx, f"Constante '{const_name}' ya declarada como {symbol_type} en este ámbito")
             return
         
         declared_type = self.get_type_from_ctx(ctx.typeAnnotation().type_()) if ctx.typeAnnotation() else None
@@ -374,7 +442,9 @@ class SemanticVisitor(CompiscriptVisitor):
         var_name = ctx.Identifier().getText()
         
         if self.symbol_table.is_declared_in_current_scope(var_name):
-            self.add_error(ctx, f"Variable '{var_name}' ya declarada en este ámbito")
+            existing_symbol = self.symbol_table.lookup_in_current_scope(var_name)
+            symbol_type = "constante" if existing_symbol and hasattr(existing_symbol, 'is_const') and existing_symbol.is_const else "variable"
+            self.add_error(ctx, f"Variable '{var_name}' ya declarada como {symbol_type} en este ámbito")
             return
         
         declared_type = self.get_type_from_ctx(ctx.typeAnnotation().type_()) if ctx.typeAnnotation() else None
@@ -400,7 +470,7 @@ class SemanticVisitor(CompiscriptVisitor):
         # Verificar asignación inicial
         if ctx.initializer():
             expr_type = initializer_type
-            if expr_type != ERROR_TYPE and not expr_type.can_assign_to(final_type):
+            if expr_type and expr_type != ERROR_TYPE and not expr_type.can_assign_to(final_type):
                 self.add_error(ctx, f"No se puede asignar {expr_type.name} a {final_type.name}")
 
         try:
@@ -470,7 +540,14 @@ class SemanticVisitor(CompiscriptVisitor):
         if current_scope.scope_type not in ['function', 'class']:
             self.symbol_table.enter_scope("block")
         
+        # Reset del flag de código muerto al inicio de cada bloque
+        old_unreachable = self.unreachable_code
+        self.unreachable_code = False
+        
         result = self.visitChildren(ctx)
+        
+        # Restaurar el estado previo
+        self.unreachable_code = old_unreachable
         
         if current_scope.scope_type not in ['function', 'class']:
             self.symbol_table.exit_scope()
@@ -497,7 +574,12 @@ class SemanticVisitor(CompiscriptVisitor):
         
         # CHECK FOR DUPLICATE FUNCTIONS IN CURRENT SCOPE
         if self.symbol_table.is_declared_in_current_scope(func_name):
-            self.add_error(ctx, f"Función '{func_name}' ya declarada en este ámbito")
+            existing_symbol = self.symbol_table.lookup_in_current_scope(func_name)
+            if hasattr(existing_symbol, 'category'):
+                symbol_type = existing_symbol.category
+            else:
+                symbol_type = "símbolo"
+            self.add_error(ctx, f"Función '{func_name}' ya declarada como {symbol_type} en este ámbito")
             return
         
         current_scope_id = self.symbol_table.scopes[-1].scope_id
@@ -567,6 +649,9 @@ class SemanticVisitor(CompiscriptVisitor):
     
     # En semantic_visitor.py
     def visitReturnStatement(self, ctx):
+        # Verificar código muerto antes del return
+        self.check_unreachable_code(ctx, "statement return")
+        
         if not self.current_function:
             self.add_error(ctx, "return fuera de función")
             return
@@ -580,19 +665,20 @@ class SemanticVisitor(CompiscriptVisitor):
             self.add_error(ctx, f"Tipo de retorno no coincide. Esperado: {self.current_function.return_type.name}")
         
         self.current_function.return_statements.append(expr_type)
+        
+        # Marcar que cualquier código después de este return es inalcanzable
+        self.unreachable_code = True
+        
         return expr_type
     
     # FUNCTION CALL VALIDATION
     def visitCallExpr(self, ctx):
-        # Get function name from the primary expression
-        func_ctx = ctx.getParent()
-        while func_ctx and not hasattr(func_ctx, 'primaryAtom'):
-            func_ctx = func_ctx.getParent()
-        
-        if not func_ctx or not func_ctx.primaryAtom():
+        # Get function name from the leftHandSide parent
+        parent_ctx = ctx.parentCtx
+        if not parent_ctx or not hasattr(parent_ctx, 'primaryAtom'):
             return ERROR_TYPE
             
-        func_name = func_ctx.primaryAtom().getText()
+        func_name = parent_ctx.primaryAtom().getText()
         func_symbol = self.symbol_table.lookup(func_name)
         
         if not func_symbol:
@@ -753,14 +839,26 @@ class SemanticVisitor(CompiscriptVisitor):
     
     # BREAK AND CONTINUE VALIDATION
     def visitBreakStatement(self, ctx):
+        # Verificar código muerto antes del break
+        self.check_unreachable_code(ctx, "statement break")
+        
         if not self.in_loop:
             self.add_error(ctx, "break solo puede usarse dentro de un bucle")
+        
+        # Marcar que cualquier código después de este break es inalcanzable
+        self.unreachable_code = True
         return None
     
     def visitContinueStatement(self, ctx):
+        # Verificar código muerto antes del continue
+        self.check_unreachable_code(ctx, "statement continue")
+        
         if not self.in_loop:
             self.add_error(ctx, "continue solo puede usarse dentro de un bucle")
+        # Marcar que cualquier código después de este continue es inalcanzable
+        self.unreachable_code = True
         return None
+      
 
     # =========================================================================================================
     # REGLAS DE CLASES Y OBJETOS
@@ -1056,3 +1154,4 @@ class SemanticVisitor(CompiscriptVisitor):
             return ERROR_TYPE
 
         return current_type if current_type else ERROR_TYPE
+
