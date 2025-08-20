@@ -8,16 +8,16 @@ from contextlib import redirect_stdout
 
 import streamlit as st
 
-st.set_page_config(page_title="CompiScript IDE", layout="wide")
+st.set_page_config(page_title="Mini IDE", layout="wide")
 
-# --- Rutas (según la estructura de carpetas) ---
+# --- Rutas ---
 IDE_DIR = Path(__file__).resolve().parent
 PROY_DIR = IDE_DIR.parent / "proyecto"
 AST_PATH = PROY_DIR / "ast.json"
 LOG_PATH = PROY_DIR / "log.txt"
 GRAMMAR = PROY_DIR / "Compiscript.g4"
 
-# PYTHONPATH
+# PYTHONPATH para 'proyecto'
 if str(PROY_DIR) not in sys.path:
     sys.path.insert(0, str(PROY_DIR))
 
@@ -39,8 +39,10 @@ if "upload_name" not in st.session_state:
     st.session_state.upload_name = None
 if "last_compile_ok" not in st.session_state:
     st.session_state.last_compile_ok = False
-if "errors" not in st.session_state:
-    st.session_state.errors = []   # ← aquí guardaremos analyzer.errors
+if "last_errors" not in st.session_state:
+    st.session_state.last_errors = []
+if "symbols" not in st.session_state:
+    st.session_state.symbols = []
 
 # ---------- Utilidades ----------
 def ensure_grammar_generated() -> str:
@@ -56,6 +58,7 @@ def ensure_grammar_generated() -> str:
     ]
     if all(p.exists() for p in needed):
         return ""
+
     if not GRAMMAR.exists():
         raise FileNotFoundError(f"No se encontró la gramática: {GRAMMAR}")
 
@@ -71,13 +74,6 @@ def ensure_grammar_generated() -> str:
 
 # -------- Compilar --------
 def compile_current_code() -> None:
-    """
-    Compila el código del editor con el pipeline de proyecto/main.py.
-    - Asegura gramática generada
-    - Ejecuta run_from_text
-    - Guarda stdout en log.txt
-    - Bloquea edición
-    """
     if cps_main is None:
         st.session_state.output_text = "Error: no pude importar proyecto/main.py"
         st.session_state.locked = False
@@ -95,19 +91,18 @@ def compile_current_code() -> None:
     try:
         # Generar gramática si hace falta
         antlr_log = ensure_grammar_generated()
-        # Ejecutar compilación capturando stdout (pero no errores, que vienen por retorno)
         with redirect_stdout(buffer):
             result = cps_main.run_from_text(src, ast_path=str(AST_PATH))
-        # Guardar log sin errores (porque ya no se imprimen)
+
+        # Guardar log (tokens, tabla, etc. — SIN errores)
         out = (antlr_log + "\n" + buffer.getvalue()).strip()
         LOG_PATH.write_text(out, encoding="utf-8")
 
-        # Guardar errores en estado
-        st.session_state.errors = result.get("errors", []) or []
+        # Guardar datos estructurados en sesión
+        st.session_state.last_errors = result.get("errors", [])
+        st.session_state.symbols = result.get("symbols", [])
 
-        st.session_state.output_text = (
-            "Compilación finalizada. Revisa 'Árbol Sintáctico', 'Errores' y 'Mensajes'."
-        )
+        st.session_state.output_text = "Compilación finalizada. Revisa Árbol, Errores, Tabla de Símbolos y Mensajes."
         st.session_state.locked = True
         st.session_state.last_compile_ok = True
 
@@ -117,7 +112,6 @@ def compile_current_code() -> None:
         st.session_state.output_text = msg
         st.session_state.locked = False
         st.session_state.last_compile_ok = False
-        st.session_state.errors = []
 
     except Exception as e:
         msg = f"Error durante la compilación: {e}"
@@ -125,7 +119,6 @@ def compile_current_code() -> None:
         st.session_state.output_text = msg
         st.session_state.locked = False
         st.session_state.last_compile_ok = False
-        st.session_state.errors = []
 
 # ------- Árbol Sintáctico ---------
 def render_ast_node(node: dict):
@@ -138,8 +131,6 @@ def render_ast_node(node: dict):
         info = f"{node.get('name')} → '{node.get('text')}'  (L{node.get('line')}:C{node.get('column')})"
         st.markdown(f"- **{info}**")
         return
-
-    # etiqueta rica para reglas
     pos = ""
     if all(k in node for k in ("start_line", "end_line")):
         pos = f"  [L{node['start_line']}..L{node['end_line']}]"
@@ -149,59 +140,55 @@ def render_ast_node(node: dict):
 
 # ---------- Barra superior ----------
 c1, csp, c3 = st.columns([4, 4, 4])
-
 with c1:
-    # Solo .cps
     archivo = st.file_uploader("Cargar archivo .cps", type=["cps"])
     if archivo is not None:
         name = archivo.name
-        if not name.lower().endswith(".cps"):
-            st.error("Solo se aceptan archivos con extensión .cps")
-        else:
-            try:
-                text = archivo.getvalue().decode("utf-8")
-            except Exception:
-                text = archivo.getvalue().decode("latin-1", errors="ignore")
-            st.session_state.code_input = text
-            st.session_state.upload_name = name
-            st.session_state.output_text = f"Archivo cargado: {name}"
-            st.session_state.locked = False
+        try:
+            text = archivo.getvalue().decode("utf-8")
+        except Exception:
+            text = archivo.getvalue().decode("latin-1", errors="ignore")
+        st.session_state.code_input = text
+        st.session_state.upload_name = name
+        st.session_state.output_text = f"Archivo cargado: {name}"
+        # No bloquear para poder editar el contenido cargado
+        st.session_state.locked = False
 
 with c3:
     if st.button("Compilar", use_container_width=True):
         compile_current_code()
 
 # ---------- Selector de vista ----------
-vista = st.segmented_control(
-    "Vista",
-    options=["Código", "Árbol Sintáctico", "Acciones", "Mensajes", "Errores"],
-    default=st.session_state.vista,
-)
+try:
+    vista = st.segmented_control(
+        "Vista",
+        options=["Código", "Árbol Sintáctico", "Errores", "Tabla de Símbolos", "Mensajes"],
+        default=st.session_state.vista,
+    )
+except Exception:
+    vista = st.radio(
+        "Vista",
+        ["Código", "Árbol Sintáctico", "Errores", "Tabla de Símbolos", "Mensajes"],
+        index=["Código", "Árbol Sintáctico", "Errores", "Tabla de Símbolos", "Mensajes"].index(st.session_state.vista),
+        horizontal=True,
+    )
 st.session_state.vista = vista
 
 # ---------- Vistas ----------
 if vista == "Código":
     filename_hint = f" ({st.session_state.upload_name})" if st.session_state.upload_name else ""
+    # MISMO key SIEMPRE -> el texto persiste aunque cambies de vista o bloquees edición
+    st.text_area(
+        label=f"Editor{filename_hint}",
+        key="code_input",
+        height=380,
+        placeholder="Escribe tu código Compiscript aquí…",
+        label_visibility="collapsed",
+        disabled=st.session_state.locked,
+    )
     if st.session_state.locked:
-        st.text_area(
-            label=f"Editor{filename_hint}",
-            value=st.session_state.code_input,
-            height=380,
-            disabled=True,
-            label_visibility="collapsed",
-            key="editor_locked",
-        )
-        st.caption("La edición está bloqueada tras compilar.")
         if st.button("Editar de nuevo"):
             st.session_state.locked = False
-    else:
-        st.text_area(
-            label=f"Editor{filename_hint}",
-            key="code_input",
-            height=380,
-            placeholder="Escribe tu código Compiscript aquí…",
-            label_visibility="collapsed",
-        )
     st.caption(st.session_state.output_text)
 
 elif vista == "Árbol Sintáctico":
@@ -209,31 +196,62 @@ elif vista == "Árbol Sintáctico":
         try:
             data = json.loads(AST_PATH.read_text(encoding="utf-8"))
             st.markdown("**Árbol sintáctico** (expande los nodos):")
-            # raíz visible como expander principal
             render_ast_node(data)
         except Exception as e:
             st.error(f"No se pudo leer ast.json: {e}")
     else:
         st.info("Aún no hay ast.json. Compila primero.")
 
-elif vista == "Acciones":
-    st.subheader("Acciones")
-    st.caption("Próximamente: ejecutar pruebas, formatear código, limpiar artefactos, etc.")
-    st.write("- (placeholder)")
+elif vista == "Tabla de Símbolos":
+    symdata = st.session_state.symbols or []
+    if not symdata:
+        st.info("Aún no hay tabla de símbolos. Compila primero.")
+    else:
+        st.subheader("Tabla de Símbolos")
+        for scope in symdata:
+            header = f"Ámbito {scope['scope_id']} ({scope['scope_type']})"
+            if scope.get("parent_id") is not None:
+                header += f" — padre: {scope['parent_id']}"
+            with st.expander(header, expanded=False):
+                syms = scope.get("symbols", [])
+                if not syms:
+                    st.caption("— vacío —")
+                else:
+                    for s in syms:
+                        cat = s.get("category")
+                        if cat == "variable":
+                            flags = " const" if s.get("is_const") else ""
+                            inf = " (inferred)" if s.get("is_type_inferred") else ""
+                            st.write(f"**Var** {s['name']}{flags}{inf}: `{s.get('type')}`")
+                        elif cat == "function":
+                            params = ", ".join([f"{p.get('type')} {p.get('name')}" for p in s.get("parameters", [])])
+                            st.write(f"**Func** {s['name']}({params}) -> `{s.get('return_type')}`")
+                        elif cat == "class":
+                            parent = s.get("parent")
+                            st.write(f"**Class** {s['name']}" + (f" : {parent}" if parent else ""))
+                            if s.get("attributes"):
+                                st.markdown("_Atributos_")
+                                for a in s["attributes"]:
+                                    flags = " const" if a.get("is_const") else ""
+                                    st.write(f"- {a['name']}{flags}: `{a.get('type')}`")
+                            if s.get("methods"):
+                                st.markdown("_Métodos_")
+                                for m in s["methods"]:
+                                    params = ", ".join([f"{p.get('type')} {p.get('name')}" for p in m.get("parameters", [])])
+                                    st.write(f"- {m['name']}({params}) -> `{m.get('return_type')}`")
 
 elif vista == "Mensajes":
     if LOG_PATH.exists():
-        # lectura como texto plano, sin permitir edición
         content = LOG_PATH.read_text(encoding="utf-8")
         st.text_area("Mensajes del compilador", value=content, height=380, disabled=True)
     else:
         st.info("Aún no hay log.txt. Compila para ver los mensajes.")
 
 elif vista == "Errores":
-    errs = st.session_state.errors or []
+    errs = st.session_state.last_errors or []
     st.subheader("Errores del analizador")
     if not errs:
-        st.success("Sin errores.")
+        st.success("Sin errores semánticos.")
     else:
         # Soporta listas de strings o de dicts
         for i, e in enumerate(errs, start=1):
@@ -246,3 +264,4 @@ elif vista == "Errores":
                 st.error(f"{i}. {msg}{where}")
             else:
                 st.error(f"{i}. {e}")
+

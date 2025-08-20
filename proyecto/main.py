@@ -42,6 +42,54 @@ def tree_to_json(node, parser, lexer=None):
     
     return result
 
+
+# --- Serializar la tabla de símbolos ---
+def _type_name(t):
+    try:
+        return t.name if t else None
+    except Exception:
+        return None
+
+def _serialize_symbol(sym):
+    base = {
+        "name": getattr(sym, "name", None),
+        "category": getattr(sym, "category", None),
+        "scope_id": getattr(sym, "scope_id", None),
+        "type": _type_name(getattr(sym, "type", None)),
+    }
+    from classes.symbols import VariableSymbol, FunctionSymbol, ClassSymbol
+    if isinstance(sym, VariableSymbol):
+        base.update({
+            "is_const": getattr(sym, "is_const", False),
+            "is_type_inferred": getattr(sym, "is_type_inferred", False),
+        })
+    elif isinstance(sym, FunctionSymbol):
+        base.update({
+            "return_type": _type_name(getattr(sym, "return_type", None)),
+            "parameters": [{"name": p.name, "type": _type_name(p.type)} for p in sym.parameters],
+        })
+    elif isinstance(sym, ClassSymbol):
+        base.update({
+            "parent": getattr(sym.parent_class, "name", None),
+            "attributes": [{"name": a.name, "type": _type_name(a.type), "is_const": getattr(a, "is_const", False)}
+                           for a in sym.attributes.values()],
+            "methods": [{"name": m.name, "return_type": _type_name(m.return_type),
+                         "parameters": [{"name": p.name, "type": _type_name(p.type)} for p in m.parameters]}
+                        for m in sym.methods.values()],
+        })
+    return base
+
+def _serialize_symbol_table(symtab):
+    data = []
+    for scope in symtab.all_scopes:
+        data.append({
+            "scope_id": scope.scope_id,
+            "scope_type": scope.scope_type,
+            "parent_id": scope.parent.scope_id if getattr(scope, "parent", None) else None,
+            "symbols": [_serialize_symbol(s) for s in scope.symbols.values()],
+        })
+    return data
+
 def _run_common(input_stream, ast_path="ast.json"):
     # lexer
     lexer = CompiscriptLexer(input_stream)
@@ -57,7 +105,7 @@ def _run_common(input_stream, ast_path="ast.json"):
     parser = CompiscriptParser(stream)
     tree = parser.program()
 
-    # AST → JSON
+    # AST -> JSON
     ast_json = tree_to_json(tree, parser, lexer)
     with open(ast_path, "w", encoding="utf-8") as f:
         json.dump(ast_json, f, indent=2, ensure_ascii=False)
@@ -67,23 +115,13 @@ def _run_common(input_stream, ast_path="ast.json"):
     analyzer.visit(tree)
 
     # resultados
-    if analyzer.errors:
-        error = getattr(analyzer, "errors", [])        
-    else:
+    errors = list(getattr(analyzer, "errors", []))
+    if not errors:
         print("\nAnálisis semántico completado sin errores")
-        
-    # 5. Mostrar tabla de símbolos (debug)
-    try:
-        print("\n=== Tabla de Símbolos ===")
-        for scope in analyzer.symbol_table.all_scopes:
-            print(f"\nÁmbito {scope.scope_id} ({scope.scope_type}):")
-            for name, symbol in scope.symbols.items():
-                print(f"  {symbol}")
-    except Exception:
-        # Si no existe symbol_table/all_scopes no reventar el proceso
-        pass
+    
+    symbols_json = _serialize_symbol_table(analyzer.symbol_table)
 
-    return {"ast": ast_json, "errors": error}
+    return {"ast": ast_json, "errors": errors, "symbols": symbols_json}
 
 
 def run_from_text(source_code: str, ast_path="ast.json"):
@@ -98,7 +136,7 @@ def run_from_file(file_path: str, ast_path="ast.json"):
     return _run_common(input_stream, ast_path=ast_path)
 
 
-# --- CLI tradicional (opcional) ---
+# --- CLI tradicional ---
 def main(argv=None):
     argv = argv or sys.argv
     if len(argv) < 2:
