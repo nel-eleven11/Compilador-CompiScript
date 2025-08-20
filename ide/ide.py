@@ -43,6 +43,8 @@ if "last_errors" not in st.session_state:
     st.session_state.last_errors = []
 if "symbols" not in st.session_state:
     st.session_state.symbols = []
+if "editor_widget" not in st.session_state:
+    st.session_state.editor_widget = st.session_state.code_input
 
 # ---------- Utilidades ----------
 def ensure_grammar_generated() -> str:
@@ -71,6 +73,10 @@ def ensure_grammar_generated() -> str:
     cmd = ["antlr4", "-Dlanguage=Python3", "Compiscript.g4", "-visitor", "-no-listener"]
     proc = subprocess.run(cmd, cwd=str(PROY_DIR), capture_output=True, text=True, check=True)
     return f"=== ANTLR4 ===\n{proc.stdout}\n{proc.stderr}"
+
+def _sync_editor_to_state():
+# Copia lo que tenga el widget al valor canónico
+    st.session_state.code_input = st.session_state.editor_widget
 
 # -------- Compilar --------
 def compile_current_code() -> None:
@@ -139,20 +145,27 @@ def render_ast_node(node: dict):
             render_ast_node(child)
 
 # ---------- Barra superior ----------
+def _on_upload():
+    f = st.session_state.get("uploader")
+    if f is None:
+        return
+    name = f.name
+    try:
+        text = f.getvalue().decode("utf-8")
+    except Exception:
+        text = f.getvalue().decode("latin-1", errors="ignore")
+
+    # Actualiza SIEMPRE ambos: el canónico y el del widget
+    st.session_state.code_input = text
+    st.session_state.editor_widget = text
+
+    st.session_state.upload_name = name
+    st.session_state.output_text = f"Archivo cargado: {name}"
+    st.session_state.locked = False
+
 c1, csp, c3 = st.columns([4, 4, 4])
 with c1:
-    archivo = st.file_uploader("Cargar archivo .cps", type=["cps"])
-    if archivo is not None:
-        name = archivo.name
-        try:
-            text = archivo.getvalue().decode("utf-8")
-        except Exception:
-            text = archivo.getvalue().decode("latin-1", errors="ignore")
-        st.session_state.code_input = text
-        st.session_state.upload_name = name
-        st.session_state.output_text = f"Archivo cargado: {name}"
-        # No bloquear para poder editar el contenido cargado
-        st.session_state.locked = False
+    archivo = st.file_uploader("Cargar archivo .cps", type=["cps"], key="uploader", on_change=_on_upload)
 
 with c3:
     if st.button("Compilar", use_container_width=True):
@@ -177,14 +190,15 @@ st.session_state.vista = vista
 # ---------- Vistas ----------
 if vista == "Código":
     filename_hint = f" ({st.session_state.upload_name})" if st.session_state.upload_name else ""
-    # MISMO key SIEMPRE -> el texto persiste aunque cambies de vista o bloquees edición
     st.text_area(
         label=f"Editor{filename_hint}",
-        key="code_input",
+        key="editor_widget",                              
+        value=st.session_state.code_input,              
         height=380,
         placeholder="Escribe tu código Compiscript aquí…",
         label_visibility="collapsed",
         disabled=st.session_state.locked,
+        on_change=_sync_editor_to_state,                
     )
     if st.session_state.locked:
         if st.button("Editar de nuevo"):
