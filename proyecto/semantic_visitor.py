@@ -87,7 +87,15 @@ class SemanticVisitor(CompiscriptVisitor):
         if not type_ctx:
             return None
         type_str = type_ctx.getText()
-        return get_type_from_string(type_str)
+        t = get_type_from_string(type_str)
+        
+        if t is not None:
+            return t
+        # Si no es primitivo/array, puede ser una clase declarada
+        cls = self._lookup_class(type_str)
+        if cls:
+            return self._class_type(type_str)
+        return None
     
     # Visit methods
     def visitProgram(self, ctx):
@@ -493,6 +501,42 @@ class SemanticVisitor(CompiscriptVisitor):
         return source_type.can_assign_to(target_type)
     
     def visitAssignment(self, ctx):
+
+        # Caso b) property assign: hay DOS expresiones en el contexto
+        if len(ctx.expression()) == 2:
+            base_expr = ctx.expression(0)
+            value_expr = ctx.expression(1)
+            member_name = ctx.Identifier().getText()
+
+            base_type = self.visit(base_expr)
+            value_type = self.visit(value_expr)
+
+            if base_type == ERROR_TYPE:
+                return ERROR_TYPE
+
+            # Debe ser instancia de clase
+            cls_sym = self._lookup_class(base_type.name) if base_type else None
+            if not cls_sym:
+                self.add_error(ctx, f"No se puede asignar a miembro '{member_name}' de tipo no-clase '{base_type.name if base_type else '?'}'")
+                return ERROR_TYPE
+
+            # Buscar atributo en la jerarquía (incluye herencia)
+            attr = self.symbol_table.lookup_in_class(cls_sym.name, member_name)
+            if not isinstance(attr, VariableSymbol):
+                self.add_error(ctx, f"Miembro '{member_name}' no existe en clase '{cls_sym.name}'")
+                return ERROR_TYPE
+
+            if attr.is_const:
+                self.add_error(ctx, f"No se puede reasignar la constante '{member_name}'")
+                return ERROR_TYPE
+
+            if value_type != ERROR_TYPE and not value_type.can_assign_to(attr.type):
+                self.add_error(ctx, f"No se puede asignar {value_type.name} a {attr.type.name}")
+                return ERROR_TYPE
+
+            return value_type if value_type else ERROR_TYPE
+
+        # Caso a) asignación simple a variable
         # Obtener el nombre de la variable
         var_name = ctx.Identifier().getText() if ctx.Identifier() else None
         if not var_name:
@@ -997,13 +1041,15 @@ class SemanticVisitor(CompiscriptVisitor):
     #
 
     def visitLeftHandSide(self, ctx: CompiscriptParser.LeftHandSideContext):
-
+        # valide indexación
+        # busque atributos/métodos recorriendo herencia
+        # permita llamadas a métodos (encadenadas)
         base = ctx.primaryAtom()
 
         current_type = None
         pending_func = None  # FunctionSymbol pendiente de invocar
 
-        # ---------------- Base ----------------
+        # -------- Base ----------
         if isinstance(base, CompiscriptParser.IdentifierExprContext):
             name = base.Identifier().getText()
             sym = self.symbol_table.lookup(name)
@@ -1034,13 +1080,12 @@ class SemanticVisitor(CompiscriptVisitor):
             # Verificación de constructor
             ctor = cls.methods.get("constructor")
             if ctor:
-                expected = len(ctor.parameters)
-                if len(arg_types) != expected:
-                    self.add_error(base, f"Constructor de '{class_name}' espera {expected} argumentos, recibió {len(arg_types)}")
+                if len(arg_types) != len(ctor.parameters):
+                    self.add_error(base, f"Constructor de '{class_name}' espera {len(ctor.parameters)} argumentos, recibió {len(arg_types)}")
                 else:
-                    for i, (param, arg_t) in enumerate(zip(ctor.parameters, arg_types), start=1):
-                        if arg_t != ERROR_TYPE and not arg_t.can_assign_to(param.type):
-                            self.add_error(base, f"Argumento {i} del constructor de '{class_name}': esperado {param.type.name}, encontrado {arg_t.name}")
+                    for i, (p, a) in enumerate(zip(ctor.parameters, arg_types), start=1):
+                        if a != ERROR_TYPE and not a.can_assign_to(p.type):
+                            self.add_error(base, f"Argumento {i} del constructor de '{class_name}': esperado {p.type.name}, encontrado {a.name}")
             elif len(arg_types) != 0:
                 self.add_error(base, f"Clase '{class_name}' no define constructor; se esperaban 0 argumentos")
 
@@ -1055,29 +1100,26 @@ class SemanticVisitor(CompiscriptVisitor):
         else:
             return self.visitChildren(ctx)
 
-        # --------------- Sufijos encadenados ---------------
+        # -------- Sufijos ----------
         suffixes = list(ctx.suffixOp())
-
         i = 0
         while i < len(suffixes):
             s = suffixes[i]
 
             # Llamada: (...)
             if isinstance(s, CompiscriptParser.CallExprContext):
-                arg_types = []
+                args = []
                 if s.arguments():
                     for e in s.arguments().expression():
-                        arg_types.append(self.visit(e))
+                        args.append(self.visit(e))
 
                 if pending_func:
-                    # Validar llamada a esa función/método
-                    expected = len(pending_func.parameters)
-                    if len(arg_types) != expected:
-                        self.add_error(s, f"Función '{pending_func.name}' espera {expected} argumentos, recibió {len(arg_types)}")
+                    if len(args) != len(pending_func.parameters):
+                        self.add_error(s, f"Función '{pending_func.name}' espera {len(pending_func.parameters)} argumentos, recibió {len(args)}")
                     else:
-                        for j, (param, arg_t) in enumerate(zip(pending_func.parameters, arg_types), start=1):
-                            if arg_t != ERROR_TYPE and not arg_t.can_assign_to(param.type):
-                                self.add_error(s, f"Argumento {j} de '{pending_func.name}': esperado {param.type.name}, encontrado {arg_t.name}")
+                        for j, (p, a) in enumerate(zip(pending_func.parameters, args), start=1):
+                            if a != ERROR_TYPE and not a.can_assign_to(p.type):
+                                self.add_error(s, f"Argumento {j} de '{pending_func.name}': esperado {p.type.name}, encontrado {a.name}")
                     current_type = pending_func.return_type
                     pending_func = None
                 else:
@@ -1096,52 +1138,49 @@ class SemanticVisitor(CompiscriptVisitor):
                     current_type = current_type.element_type
                 pending_func = None
 
-            # Acceso a propiedad: .ident
+            # Acceso a propiedad: .ident  (atributo o método, con herencia)
             elif isinstance(s, CompiscriptParser.PropertyAccessExprContext):
                 member = s.Identifier().getText()
-                if isinstance(current_type, ArrayType):
-                    self.add_error(s, f"El arreglo no posee miembro '{member}'")
+
+                # Resolver clase del tipo actual
+                cls = self._lookup_class(current_type.name) if current_type else None
+                if not cls:
+                    self.add_error(s, f"No se puede acceder a miembro '{member}' de '{current_type.name if current_type else '?'}'")
                     current_type = ERROR_TYPE
                     pending_func = None
                 else:
-                    cls = self._lookup_class(current_type.name) if current_type else None
-                    if not cls:
-                        self.add_error(s, f"No se puede acceder a miembro '{member}' de '{current_type.name if current_type else '?'}'")
-                        current_type = ERROR_TYPE
+                    # Buscar miembro en jerarquía (atributo / método)
+                    found = self.symbol_table.lookup_in_class(cls.name, member)
+
+                    if isinstance(found, VariableSymbol):
+                        current_type = found.type
                         pending_func = None
-                    else:
-                        # ¿atributo?
-                        attr = cls.attributes.get(member)
-                        if attr:
-                            current_type = attr.type
+
+                    elif isinstance(found, FunctionSymbol):
+                        # ¿Se invoca de inmediato?
+                        if i + 1 < len(suffixes) and isinstance(suffixes[i + 1], CompiscriptParser.CallExprContext):
+                            call = suffixes[i + 1]
+                            args = []
+                            if call.arguments():
+                                for e in call.arguments().expression():
+                                    args.append(self.visit(e))
+                            if len(args) != len(found.parameters):
+                                self.add_error(call, f"Método '{member}' espera {len(found.parameters)} argumentos, recibió {len(args)}")
+                            else:
+                                for j, (p, a) in enumerate(zip(found.parameters, args), start=1):
+                                    if a != ERROR_TYPE and not a.can_assign_to(p.type):
+                                        self.add_error(call, f"Argumento {j} de método '{member}': esperado {p.type.name}, encontrado {a.name}")
+                            current_type = found.return_type
+                            i += 1  # consumimos el CallExpr
                             pending_func = None
                         else:
-                            # ¿método?
-                            m = cls.methods.get(member)
-                            if m:
-                                # ¿se invoca justo después?
-                                if i + 1 < len(suffixes) and isinstance(suffixes[i + 1], CompiscriptParser.CallExprContext):
-                                    call = suffixes[i + 1]
-                                    args = []
-                                    if call.arguments():
-                                        for e in call.arguments().expression():
-                                            args.append(self.visit(e))
-                                    if len(args) != len(m.parameters):
-                                        self.add_error(call, f"Método '{member}' espera {len(m.parameters)} argumentos, recibió {len(args)}")
-                                    else:
-                                        for j, (param, arg_t) in enumerate(zip(m.parameters, args), start=1):
-                                            if arg_t != ERROR_TYPE and not arg_t.can_assign_to(param.type):
-                                                self.add_error(call, f"Argumento {j} de método '{member}': esperado {param.type.name}, encontrado {arg_t.name}")
-                                    current_type = m.return_type
-                                    i += 1  # consumir el CallExpr
-                                    pending_func = None
-                                else:
-                                    self.add_error(s, f"Se esperaba invocar al método '{member}'")
-                                    current_type = ERROR_TYPE
-                                    pending_func = None
-                            else:
-                                self.add_error(s, f"Miembro '{member}' no existe en clase '{cls.name}'")
-                                current_type = ERROR_TYPE
+                            self.add_error(s, f"Se esperaba invocar al método '{member}'")
+                            current_type = ERROR_TYPE
+                            pending_func = None
+                    else:
+                        self.add_error(s, f"Miembro '{member}' no existe en clase '{cls.name}'")
+                        current_type = ERROR_TYPE
+                        pending_func = None
             else:
                 current_type = ERROR_TYPE
                 pending_func = None
