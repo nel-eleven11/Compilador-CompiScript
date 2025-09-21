@@ -2,6 +2,7 @@ from antlr4 import *
 from classes.types import *
 from classes.symbols import *
 from classes.symbol_table import SymbolTable
+from classes.code_generator import CodeGenerator
 from CompiscriptVisitor import CompiscriptVisitor
 from CompiscriptParser import CompiscriptParser
 
@@ -15,6 +16,8 @@ class SemanticVisitor(CompiscriptVisitor):
         self.loop_depth = 0
         self.warnings = []  # Para advertencias de código muerto
         self.unreachable_code = False  # Flag para detectar código muerto
+        self.codegen = CodeGenerator(self.symbol_table)
+        self.current_temp = None
         
     # Helper methods
     def add_error(self, ctx, message):
