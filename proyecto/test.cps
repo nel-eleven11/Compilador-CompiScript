@@ -1,18 +1,5 @@
-// Operaciones logicas validas
-let a: boolean = true && false;
-let b: boolean = true || false;
-let c: boolean = !true;
-
-// Comparaciones validas
-let g: boolean = 5 == 5;
-let h: boolean = "a" == "a";
-let i: boolean = null == null;
-let j: boolean = "texto" == null;
-
-// Operaciones relacionales validas
-let n: boolean = 5 < 10;
-let o: boolean = 10 >= 5;
-
-let pa: boolean = (1 == 1) != (2 > 3);
-let pb: boolean = "hola" == null;
-let ps: boolean = true && (5 == 5);
+// Test basico de operaciones aritmeticas
+let a = 5 + 3 * 2;
+let b = (10 - 4) / 2;
+let c = -a + b * 3;
+print(a + b + c);

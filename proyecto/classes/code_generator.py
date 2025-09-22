@@ -10,6 +10,7 @@ class CodeGenerator:
         self.label_counter = 0
         self.ar_designs = {}  # function_name que usa -> ActivationRecordDesign
         self.current_ar = None
+        self.current_temp = None
         
     def new_temp(self):
         """Genera un nuevo temporal"""
@@ -71,3 +72,37 @@ class CodeGenerator:
         print("=== CUÁDruplos Generados ===")
         for i, quad in enumerate(self.quadruples):
             print(f"{i}: {quad}")
+
+    def generate_arithmetic_operation(self, left_operand, right_operand, operator, ctx=None):
+        """Genera código para operaciones aritméticas binarias"""
+        result_temp = self.new_temp()
+        self.emit_quad(operator, left_operand, right_operand, result_temp)
+        self.current_temp = result_temp
+        return result_temp
+        
+    def generate_unary_operation(self, operand, operator, ctx=None):
+        """Genera código para operaciones unarias"""
+        result_temp = self.new_temp()
+        self.emit_quad(operator, operand, None, result_temp)
+        self.current_temp = result_temp
+        return result_temp
+        
+    def generate_assignment(self, target, value, ctx=None):
+        """Genera código para asignaciones"""
+        self.emit_quad('=', value, None, target)
+        return target
+        
+    def generate_load_immediate(self, value, ctx=None):
+        """Genera código para cargar valores inmediatos (literales)"""
+        temp = self.new_temp()
+        self.emit_quad('=', value, None, temp)
+        self.current_temp = temp
+        return temp
+        
+    def generate_variable_reference(self, var_name, ctx=None):
+        """Genera código para referencias a variables"""
+        address = self.get_variable_address(var_name)
+        temp = self.new_temp()
+        self.emit_quad('@', address, None, temp)  # @ para indicar desreferenciación
+        self.current_temp = temp
+        return temp

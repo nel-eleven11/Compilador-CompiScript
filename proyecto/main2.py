@@ -59,6 +59,10 @@ def main(argv):
         for name, symbol in scope.symbols.items():
             print(f"  {symbol}")
 
+    # Mostrar TAC, con cuadruplos
+    print("\n")
+    analyzer.codegen.print_quadruples()
+
 if __name__ == '__main__':
     if len(sys.argv) < 2:
         # Si no hay argumentos, ejecutar pruebas

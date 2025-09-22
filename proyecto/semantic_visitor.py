@@ -158,20 +158,32 @@ class SemanticVisitor(CompiscriptVisitor):
         if len(children) == 1:
             return self.visit(ctx.multiplicativeExpr(0))
 
+        # Visitar la primera expresión
         left_type = self.visit(ctx.multiplicativeExpr(0))
+        left_temp = self.codegen.current_temp  # Guardar el temporal izquierdo
         
         # Procesar cada operador y su expresión derecha
         for i in range(len(ctx.children) // 2):
             operator = ctx.children[2*i + 1]  # El operador está en posición impar
             right_expr = ctx.multiplicativeExpr(i + 1)
             right_type = self.visit(right_expr)
+            right_temp = self.codegen.current_temp  # Guardar el temporal derecho
             
-            left_type = self.check_additive_operation(
+            # Verificación semántica
+            result_type = self.check_additive_operation(
                 left_type, 
                 right_type, 
-                operator,  # Pasa el operador
+                operator,
                 right_expr
             )
+            
+            # Generación de código
+            if result_type != ERROR_TYPE:
+                op_text = operator.getText()
+                self.codegen.generate_arithmetic_operation(left_temp, right_temp, op_text, ctx)
+                left_temp = self.codegen.current_temp  # Actualizar para la siguiente operación
+            
+            left_type = result_type  # Actualizar el tipo para la siguiente operación
         
         return left_type
     
@@ -180,19 +192,27 @@ class SemanticVisitor(CompiscriptVisitor):
         if len(children) == 1:
             return self.visit(ctx.unaryExpr(0))
 
+        # Visitar la primera expresión
         left_type = self.visit(ctx.unaryExpr(0))
+        left_temp = self.codegen.current_temp  # Guardar el temporal izquierdo
         
         # Procesar cada operador y su expresión derecha
         for i in range(len(ctx.children) // 2):
             operator = ctx.children[2*i + 1]  # El operador está en posición impar
             right_expr = ctx.unaryExpr(i + 1)
             right_type = self.visit(right_expr)
+            right_temp = self.codegen.current_temp  # Guardar el temporal derecho
             
-            left_type = self.check_arithmetic(  # Mantenemos función original para * / %
-                left_type, 
-                right_type, 
-                right_expr
-            )
+            # Verificación semántica
+            result_type = self.check_arithmetic(left_type, right_type, right_expr)
+            
+            # Generación de código
+            if result_type != ERROR_TYPE:
+                op_text = operator.getText()
+                self.codegen.generate_arithmetic_operation(left_temp, right_temp, op_text, ctx)
+                left_temp = self.codegen.current_temp  # Actualizar para la siguiente operación
+            
+            left_type = result_type  # Actualizar el tipo para la siguiente operación
         
         return left_type
 
@@ -358,10 +378,25 @@ class SemanticVisitor(CompiscriptVisitor):
             if expr_type != BOOL_TYPE and expr_type != ERROR_TYPE:
                 self.add_error(ctx, f"Operador '!' requiere operando booleano, got {expr_type.name}")
                 return ERROR_TYPE
+            
+            # Generación de código
+            if expr_type != ERROR_TYPE:
+                operand_temp = self.codegen.current_temp
+                self.codegen.generate_unary_operation(operand_temp, '!', ctx)
+            
             return BOOL_TYPE
         elif ctx.MINUS():
-            # Manejo existente para el operador -
-            return self.visitChildren(ctx)
+            expr_type = self.visit(ctx.unaryExpr())
+            if expr_type != INT_TYPE and expr_type != ERROR_TYPE:
+                self.add_error(ctx, f"Operador '-' requiere operando entero, got {expr_type.name}")
+                return ERROR_TYPE
+            
+            # Generación de código
+            if expr_type != ERROR_TYPE:
+                operand_temp = self.codegen.current_temp
+                self.codegen.generate_unary_operation(operand_temp, 'NEG', ctx)  # NEG para negación unaria
+            
+            return INT_TYPE
         else:
             return self.visit(ctx.primaryExpr())
         
@@ -419,19 +454,37 @@ class SemanticVisitor(CompiscriptVisitor):
         return None
     
     def visitLiteralExpr(self, ctx):
+        # Análisis semántico existente
         if ctx.NULL():
-            return NULL_TYPE
+            result_type = NULL_TYPE
         elif ctx.TRUE() or ctx.FALSE():
-            return BOOL_TYPE
+            result_type = BOOL_TYPE
         elif ctx.Literal():
             literal = ctx.Literal().getText()
             if literal[0] == '"':  # Es string
-                return STRING_TYPE
-            else:  # Es numero ya que solo se se tienen definidas 2 liteerales en la gramatica, o string o numero
-                return INT_TYPE
+                result_type = STRING_TYPE
+            else:  # Es numero
+                result_type = INT_TYPE
         elif ctx.arrayLiteral():
-            return self.visit(ctx.arrayLiteral())
-        return None
+            result_type = self.visit(ctx.arrayLiteral())
+        else:
+            result_type = None
+        
+        # Generación de código
+        if result_type != ERROR_TYPE:
+            if ctx.NULL():
+                self.codegen.generate_load_immediate('null', ctx)
+            elif ctx.TRUE():
+                self.codegen.generate_load_immediate('true', ctx)
+            elif ctx.FALSE():
+                self.codegen.generate_load_immediate('false', ctx)
+            elif ctx.Literal():
+                literal = ctx.Literal().getText()
+                self.codegen.generate_load_immediate(literal, ctx)
+            # Para arrays, es una implementación más compleja
+            # DE MOMENTO TA PENDIENTE
+        
+        return result_type
     
     # Determinar el tipo de un array literal
     def visitArrayLiteral(self, ctx):
@@ -609,6 +662,10 @@ class SemanticVisitor(CompiscriptVisitor):
             self.add_error(ctx, f"Identificador '{name}' no declarado")
             return ERROR_TYPE
             
+        # Generación de código
+        if symbol.category == 'variable':
+            self.codegen.generate_variable_reference(name, ctx)
+        
         return symbol.type
         
     def visitFunctionDeclaration(self, ctx):
