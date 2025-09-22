@@ -98,6 +98,13 @@ class CodeGenerator:
         self.emit_quad('=', value, None, temp)
         self.current_temp = temp
         return temp
+    
+    def generate_load_variable(self, var_name, ctx=None):
+        """Genera código para cargar una variable desde memoria"""
+        address = self.get_variable_address(var_name)
+        temp = self.new_temp()
+        self.emit_quad('@', address, None, temp)  # @ indica carga desde memoria
+        return temp
         
     def generate_variable_reference(self, var_name, ctx=None):
         """Genera código para referencias a variables"""
@@ -106,3 +113,16 @@ class CodeGenerator:
         self.emit_quad('@', address, None, temp)  # @ para indicar desreferenciación
         self.current_temp = temp
         return temp
+        
+    def generate_variable_declaration(self, var_name, initial_value=None, ctx=None):
+        """Genera código para declaración de variables"""
+        address = self.get_variable_address(var_name)
+        if initial_value is not None:
+            self.generate_assignment(address, initial_value, ctx)
+        return address
+        
+    def generate_constant_declaration(self, const_name, initial_value, ctx=None):
+        """Genera código para declaración de constantes"""
+        address = self.get_variable_address(const_name)
+        self.generate_assignment(address, initial_value, ctx)
+        return address

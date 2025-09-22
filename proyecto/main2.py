@@ -51,6 +51,11 @@ def main(argv):
             print(error)
     else:
         print("\nAnálisis semántico completado sin errores")
+
+    if analyzer.warnings:
+        print("\nWarnings")
+        for warning in analyzer.warnings:
+            print(warning)
         
     # Mostrar tabla de símbolos (debug)
     print("\n=== Tabla de Símbolos ===")
