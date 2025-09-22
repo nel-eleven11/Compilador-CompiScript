@@ -690,22 +690,20 @@ class SemanticVisitor(CompiscriptVisitor):
         
         return result
     
+    # luego de probar varias veces con prints y logs, realmente parece que esto no hace nada
+    # pero por miedo a romper algo, mejor lo dejo
     def visitIdentifierExpr(self, ctx):
         name = ctx.getText()
         symbol = self.symbol_table.lookup(name)
         
         if not symbol:
-            self.add_error(ctx, f"Identificador '{name}' no declaradosssss")
+            self.add_error(ctx, f"Identificador '{name}' no declarado")
             return ERROR_TYPE
             
         # GENERACIÓN DE CÓDIGO
-        print("NOOOOOOO")
-        self.add_warning(ctx, f"Identificador aaaaaaaaaaaaaa '{name}' no declarado")
         if symbol.category == 'variable':
-            print("SIIIIIIIIIIIII")
-            self.add_warning(ctx, f"Identificador aaaaaaaaaaaaaa '{name}' no declarado")
             temp = self.codegen.generate_load_variable(name, ctx)
-            self.codegen.current_temp = temp  # Actualizar el temporal actual
+            self.codegen.current_temp = temp
         
         return symbol.type
         
