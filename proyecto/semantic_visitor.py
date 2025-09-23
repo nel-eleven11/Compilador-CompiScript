@@ -313,24 +313,55 @@ class SemanticVisitor(CompiscriptVisitor):
         if ctx.getChildCount() == 1:
             return self.visit(ctx.logicalAndExpr(0))
         
+        # Visitar la primera expresión y obtener su tipo y temporal
         left_type = self.visit(ctx.logicalAndExpr(0))
+        left_temp = self.codegen.current_temp
+        
         # Iterar por cada expresión adicional
         for i in range(1, len(ctx.logicalAndExpr())):
             right_expr = ctx.logicalAndExpr(i)
             right_type = self.visit(right_expr)
-            left_type = self.check_logical(left_type, right_type, right_expr)
+            right_temp = self.codegen.current_temp
+            
+            # Verificación semántica
+            result_type = self.check_logical(left_type, right_type, right_expr)
+            
+            # Generación de código
+            if result_type != ERROR_TYPE:
+                op_text = '||' if isinstance(ctx, CompiscriptParser.LogicalOrExprContext) else '&&'
+                result_temp = self.codegen.generate_arithmetic_operation(left_temp, right_temp, op_text, ctx)
+                left_temp = result_temp
+                self.codegen.current_temp = result_temp
+            
+            left_type = result_type
+        
         return left_type
 
     def visitLogicalAndExpr(self, ctx):
         if ctx.getChildCount() == 1:
             return self.visit(ctx.equalityExpr(0))
         
+        # Visitar la primera expresión y obtener su tipo y temporal
         left_type = self.visit(ctx.equalityExpr(0))
+        left_temp = self.codegen.current_temp
+        
         # Iterar por cada expresión adicional
         for i in range(1, len(ctx.equalityExpr())):
             right_expr = ctx.equalityExpr(i)
             right_type = self.visit(right_expr)
-            left_type = self.check_logical(left_type, right_type, right_expr)
+            right_temp = self.codegen.current_temp
+            
+            # Verificación semántica
+            result_type = self.check_logical(left_type, right_type, right_expr)
+            
+            # Generación de código
+            if result_type != ERROR_TYPE:
+                result_temp = self.codegen.generate_arithmetic_operation(left_temp, right_temp, '&&', ctx)
+                left_temp = result_temp
+                self.codegen.current_temp = result_temp
+            
+            left_type = result_type
+        
         return left_type
 
     # Visitor para operaciones de igualdad (==, !=)
@@ -338,7 +369,9 @@ class SemanticVisitor(CompiscriptVisitor):
         if ctx.getChildCount() == 1:
             return self.visit(ctx.relationalExpr(0))
         
+        # Visitar la primera expresión y obtener su tipo y temporal
         left_type = self.visit(ctx.relationalExpr(0))
+        left_temp = self.codegen.current_temp
         result_type = left_type
         
         for i in range(1, ctx.getChildCount(), 2):
@@ -348,7 +381,18 @@ class SemanticVisitor(CompiscriptVisitor):
             op_node = ctx.getChild(i)
             right_expr = ctx.relationalExpr((i+1)//2)
             right_type = self.visit(right_expr)
+            right_temp = self.codegen.current_temp
+            
+            # Verificación semántica
             result_type = self.check_comparison(left_type, right_type, op_node)
+            
+            # Generación de código
+            if result_type != ERROR_TYPE:
+                op_text = op_node.getText()  # '==' o '!='
+                result_temp = self.codegen.generate_arithmetic_operation(left_temp, right_temp, op_text, ctx)
+                left_temp = result_temp
+                self.codegen.current_temp = result_temp
+            
             left_type = right_type
         
         return result_type
@@ -357,7 +401,9 @@ class SemanticVisitor(CompiscriptVisitor):
         if ctx.getChildCount() == 1:
             return self.visit(ctx.additiveExpr(0))
         
+        # Visitar la primera expresión y obtener su tipo y temporal
         left_type = self.visit(ctx.additiveExpr(0))
+        left_temp = self.codegen.current_temp
         result_type = left_type
         
         for i in range(1, ctx.getChildCount(), 2):
@@ -367,7 +413,18 @@ class SemanticVisitor(CompiscriptVisitor):
             op_node = ctx.getChild(i)
             right_expr = ctx.additiveExpr((i+1)//2)
             right_type = self.visit(right_expr)
+            right_temp = self.codegen.current_temp
+            
+            # Verificación semántica
             result_type = self.check_relational(left_type, right_type, op_node)
+            
+            # Generación de código
+            if result_type != ERROR_TYPE:
+                op_text = op_node.getText()  # '<', '<=', '>', '>='
+                result_temp = self.codegen.generate_arithmetic_operation(left_temp, right_temp, op_text, ctx)
+                left_temp = result_temp
+                self.codegen.current_temp = result_temp
+            
             left_type = right_type
         
         return result_type
@@ -382,6 +439,7 @@ class SemanticVisitor(CompiscriptVisitor):
             
             # Generación de código
             if expr_type != ERROR_TYPE:
+                # caso para operacion de negacion booleana
                 operand_temp = self.codegen.current_temp
                 self.codegen.generate_unary_operation(operand_temp, '!', ctx)
             
@@ -395,7 +453,7 @@ class SemanticVisitor(CompiscriptVisitor):
             # Generación de código
             if expr_type != ERROR_TYPE:
                 operand_temp = self.codegen.current_temp
-                self.codegen.generate_unary_operation(operand_temp, 'NEG', ctx)  # NEG para negación unaria
+                self.codegen.generate_unary_operation(operand_temp, 'NEG', ctx)  # NEG para negación unaria es el -
             
             return INT_TYPE
         else:
