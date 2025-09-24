@@ -2,6 +2,7 @@ from antlr4 import *
 from classes.types import *
 from classes.symbols import *
 from classes.symbol_table import SymbolTable
+from classes.code_generator import CodeGenerator
 from CompiscriptVisitor import CompiscriptVisitor
 from CompiscriptParser import CompiscriptParser
 
@@ -15,6 +16,8 @@ class SemanticVisitor(CompiscriptVisitor):
         self.loop_depth = 0
         self.warnings = []  # Para advertencias de código muerto
         self.unreachable_code = False  # Flag para detectar código muerto
+        self.codegen = CodeGenerator(self.symbol_table)
+        self.current_temp = None
         
     # Helper methods
     def add_error(self, ctx, message):
@@ -155,20 +158,33 @@ class SemanticVisitor(CompiscriptVisitor):
         if len(children) == 1:
             return self.visit(ctx.multiplicativeExpr(0))
 
+        # ANÁLISIS SEMÁNTICO Y GENERACIÓN DE CÓDIGO EN UNA SOLA VISITA
         left_type = self.visit(ctx.multiplicativeExpr(0))
+        left_temp = self.codegen.current_temp
         
-        # Procesar cada operador y su expresión derecha
         for i in range(len(ctx.children) // 2):
-            operator = ctx.children[2*i + 1]  # El operador está en posición impar
+            operator = ctx.children[2*i + 1]
             right_expr = ctx.multiplicativeExpr(i + 1)
-            right_type = self.visit(right_expr)
             
-            left_type = self.check_additive_operation(
-                left_type, 
-                right_type, 
-                operator,  # Pasa el operador
-                right_expr
+            # VISITA ÚNICA (análisis + generación)
+            right_type = self.visit(right_expr)
+            right_temp = self.codegen.current_temp
+            
+            # Verificación semántica
+            result_type = self.check_additive_operation(
+                left_type, right_type, operator, right_expr
             )
+            
+            # Generación de código (solo si no hay errores)
+            if result_type != ERROR_TYPE:
+                op_text = operator.getText()
+                result_temp = self.codegen.generate_arithmetic_operation(
+                    left_temp, right_temp, op_text, ctx
+                )
+                left_temp = result_temp
+                self.codegen.current_temp = result_temp
+            
+            left_type = result_type
         
         return left_type
     
@@ -177,19 +193,27 @@ class SemanticVisitor(CompiscriptVisitor):
         if len(children) == 1:
             return self.visit(ctx.unaryExpr(0))
 
+        # Visitar la primera expresión
         left_type = self.visit(ctx.unaryExpr(0))
+        left_temp = self.codegen.current_temp  # Guardar el temporal izquierdo
         
         # Procesar cada operador y su expresión derecha
         for i in range(len(ctx.children) // 2):
             operator = ctx.children[2*i + 1]  # El operador está en posición impar
             right_expr = ctx.unaryExpr(i + 1)
             right_type = self.visit(right_expr)
+            right_temp = self.codegen.current_temp  # Guardar el temporal derecho
             
-            left_type = self.check_arithmetic(  # Mantenemos función original para * / %
-                left_type, 
-                right_type, 
-                right_expr
-            )
+            # Verificación semántica
+            result_type = self.check_arithmetic(left_type, right_type, right_expr)
+            
+            # Generación de código
+            if result_type != ERROR_TYPE:
+                op_text = operator.getText()
+                self.codegen.generate_arithmetic_operation(left_temp, right_temp, op_text, ctx)
+                left_temp = self.codegen.current_temp  # Actualizar para la siguiente operación
+            
+            left_type = result_type  # Actualizar el tipo para la siguiente operación
         
         return left_type
 
@@ -289,24 +313,55 @@ class SemanticVisitor(CompiscriptVisitor):
         if ctx.getChildCount() == 1:
             return self.visit(ctx.logicalAndExpr(0))
         
+        # Visitar la primera expresión y obtener su tipo y temporal
         left_type = self.visit(ctx.logicalAndExpr(0))
+        left_temp = self.codegen.current_temp
+        
         # Iterar por cada expresión adicional
         for i in range(1, len(ctx.logicalAndExpr())):
             right_expr = ctx.logicalAndExpr(i)
             right_type = self.visit(right_expr)
-            left_type = self.check_logical(left_type, right_type, right_expr)
+            right_temp = self.codegen.current_temp
+            
+            # Verificación semántica
+            result_type = self.check_logical(left_type, right_type, right_expr)
+            
+            # Generación de código
+            if result_type != ERROR_TYPE:
+                op_text = '||' if isinstance(ctx, CompiscriptParser.LogicalOrExprContext) else '&&'
+                result_temp = self.codegen.generate_arithmetic_operation(left_temp, right_temp, op_text, ctx)
+                left_temp = result_temp
+                self.codegen.current_temp = result_temp
+            
+            left_type = result_type
+        
         return left_type
 
     def visitLogicalAndExpr(self, ctx):
         if ctx.getChildCount() == 1:
             return self.visit(ctx.equalityExpr(0))
         
+        # Visitar la primera expresión y obtener su tipo y temporal
         left_type = self.visit(ctx.equalityExpr(0))
+        left_temp = self.codegen.current_temp
+        
         # Iterar por cada expresión adicional
         for i in range(1, len(ctx.equalityExpr())):
             right_expr = ctx.equalityExpr(i)
             right_type = self.visit(right_expr)
-            left_type = self.check_logical(left_type, right_type, right_expr)
+            right_temp = self.codegen.current_temp
+            
+            # Verificación semántica
+            result_type = self.check_logical(left_type, right_type, right_expr)
+            
+            # Generación de código
+            if result_type != ERROR_TYPE:
+                result_temp = self.codegen.generate_arithmetic_operation(left_temp, right_temp, '&&', ctx)
+                left_temp = result_temp
+                self.codegen.current_temp = result_temp
+            
+            left_type = result_type
+        
         return left_type
 
     # Visitor para operaciones de igualdad (==, !=)
@@ -314,7 +369,9 @@ class SemanticVisitor(CompiscriptVisitor):
         if ctx.getChildCount() == 1:
             return self.visit(ctx.relationalExpr(0))
         
+        # Visitar la primera expresión y obtener su tipo y temporal
         left_type = self.visit(ctx.relationalExpr(0))
+        left_temp = self.codegen.current_temp
         result_type = left_type
         
         for i in range(1, ctx.getChildCount(), 2):
@@ -324,7 +381,18 @@ class SemanticVisitor(CompiscriptVisitor):
             op_node = ctx.getChild(i)
             right_expr = ctx.relationalExpr((i+1)//2)
             right_type = self.visit(right_expr)
+            right_temp = self.codegen.current_temp
+            
+            # Verificación semántica
             result_type = self.check_comparison(left_type, right_type, op_node)
+            
+            # Generación de código
+            if result_type != ERROR_TYPE:
+                op_text = op_node.getText()  # '==' o '!='
+                result_temp = self.codegen.generate_arithmetic_operation(left_temp, right_temp, op_text, ctx)
+                left_temp = result_temp
+                self.codegen.current_temp = result_temp
+            
             left_type = right_type
         
         return result_type
@@ -333,7 +401,9 @@ class SemanticVisitor(CompiscriptVisitor):
         if ctx.getChildCount() == 1:
             return self.visit(ctx.additiveExpr(0))
         
+        # Visitar la primera expresión y obtener su tipo y temporal
         left_type = self.visit(ctx.additiveExpr(0))
+        left_temp = self.codegen.current_temp
         result_type = left_type
         
         for i in range(1, ctx.getChildCount(), 2):
@@ -343,7 +413,18 @@ class SemanticVisitor(CompiscriptVisitor):
             op_node = ctx.getChild(i)
             right_expr = ctx.additiveExpr((i+1)//2)
             right_type = self.visit(right_expr)
+            right_temp = self.codegen.current_temp
+            
+            # Verificación semántica
             result_type = self.check_relational(left_type, right_type, op_node)
+            
+            # Generación de código
+            if result_type != ERROR_TYPE:
+                op_text = op_node.getText()  # '<', '<=', '>', '>='
+                result_temp = self.codegen.generate_arithmetic_operation(left_temp, right_temp, op_text, ctx)
+                left_temp = result_temp
+                self.codegen.current_temp = result_temp
+            
             left_type = right_type
         
         return result_type
@@ -355,10 +436,26 @@ class SemanticVisitor(CompiscriptVisitor):
             if expr_type != BOOL_TYPE and expr_type != ERROR_TYPE:
                 self.add_error(ctx, f"Operador '!' requiere operando booleano, got {expr_type.name}")
                 return ERROR_TYPE
+            
+            # Generación de código
+            if expr_type != ERROR_TYPE:
+                # caso para operacion de negacion booleana
+                operand_temp = self.codegen.current_temp
+                self.codegen.generate_unary_operation(operand_temp, '!', ctx)
+            
             return BOOL_TYPE
         elif ctx.MINUS():
-            # Manejo existente para el operador -
-            return self.visitChildren(ctx)
+            expr_type = self.visit(ctx.unaryExpr())
+            if expr_type != INT_TYPE and expr_type != ERROR_TYPE:
+                self.add_error(ctx, f"Operador '-' requiere operando entero, got {expr_type.name}")
+                return ERROR_TYPE
+            
+            # Generación de código
+            if expr_type != ERROR_TYPE:
+                operand_temp = self.codegen.current_temp
+                self.codegen.generate_unary_operation(operand_temp, 'NEG', ctx)  # NEG para negación unaria es el -
+            
+            return INT_TYPE
         else:
             return self.visit(ctx.primaryExpr())
         
@@ -412,23 +509,47 @@ class SemanticVisitor(CompiscriptVisitor):
             self.symbol_table.add_symbol(symbol)
         except Exception as e:
             self.add_error(ctx, str(e))
+        
+        # GENERACIÓN DE CÓDIGO
+        if not self.errors:
+            init_temp = self.codegen.current_temp  # Temporal ya generado
+            const_address = self.codegen.get_variable_address(const_name)
+            self.codegen.generate_assignment(const_address, init_temp, ctx)
             
         return None
     
     def visitLiteralExpr(self, ctx):
+        # Análisis semántico existente
         if ctx.NULL():
-            return NULL_TYPE
+            result_type = NULL_TYPE
         elif ctx.TRUE() or ctx.FALSE():
-            return BOOL_TYPE
+            result_type = BOOL_TYPE
         elif ctx.Literal():
             literal = ctx.Literal().getText()
             if literal[0] == '"':  # Es string
-                return STRING_TYPE
-            else:  # Es numero ya que solo se se tienen definidas 2 liteerales en la gramatica, o string o numero
-                return INT_TYPE
+                result_type = STRING_TYPE
+            else:  # Es numero
+                result_type = INT_TYPE
         elif ctx.arrayLiteral():
-            return self.visit(ctx.arrayLiteral())
-        return None
+            result_type = self.visit(ctx.arrayLiteral())
+        else:
+            result_type = None
+        
+        # Generación de código
+        if result_type != ERROR_TYPE:
+            if ctx.NULL():
+                self.codegen.generate_load_immediate('null', ctx)
+            elif ctx.TRUE():
+                self.codegen.generate_load_immediate('true', ctx)
+            elif ctx.FALSE():
+                self.codegen.generate_load_immediate('false', ctx)
+            elif ctx.Literal():
+                literal = ctx.Literal().getText()
+                self.codegen.generate_load_immediate(literal, ctx)
+            # Para arrays, es una implementación más compleja
+            # DE MOMENTO TA PENDIENTE
+        
+        return result_type
     
     # Determinar el tipo de un array literal
     def visitArrayLiteral(self, ctx):
@@ -464,7 +585,7 @@ class SemanticVisitor(CompiscriptVisitor):
             is_type_inferred = False
         else:
             final_type = initializer_type if initializer_type else NULL_TYPE
-            is_type_inferred = True  # Tipo inferido, no explícito
+            is_type_inferred = True
 
         current_scope_id = self.symbol_table.scopes[-1].scope_id
         symbol = VariableSymbol(
@@ -472,7 +593,7 @@ class SemanticVisitor(CompiscriptVisitor):
             type_=final_type,
             scope_id=current_scope_id,
             is_const=False,
-            is_type_inferred=is_type_inferred  # Pasar nuevo atributo
+            is_type_inferred=is_type_inferred
         )
 
         # Verificar asignación inicial
@@ -486,6 +607,12 @@ class SemanticVisitor(CompiscriptVisitor):
         except Exception as e:
             self.add_error(ctx, str(e))
 
+        # GENERACIÓN DE CÓDIGO
+        if not self.errors and ctx.initializer():
+            init_temp = self.codegen.current_temp  # Temporal ya generado en la visita
+            var_address = self.codegen.get_variable_address(var_name)
+            self.codegen.generate_assignment(var_address, init_temp, ctx)
+        
         # Si se está dentro de una clase, registrar como atributo
         if self.current_class:
             self.current_class.add_attribute(symbol)
@@ -534,6 +661,18 @@ class SemanticVisitor(CompiscriptVisitor):
                 self.add_error(ctx, f"No se puede asignar {value_type.name} a {attr.type.name}")
                 return ERROR_TYPE
 
+            # GENERACIÓN DE CÓDIGO
+            if not self.errors:
+                base_temp = self.codegen.current_temp  # Temporal de la expresión base
+                value_temp = self.visit(value_expr)    # Temporal del valor a asignar
+                
+                # Para propiedades de objetos, necesitamos calcular la dirección
+                # OJO
+                # OJO ACA esto puede que sea necesario modificarlo para el caso de los objetos.......................
+                # Esto es un placeholder seguramnte haya que implementar la lógica específica
+                prop_address = f"{base_temp}.{member_name}"
+                self.codegen.generate_assignment(prop_address, value_temp, ctx)
+
             return value_type if value_type else ERROR_TYPE
 
         # Caso a) asignación simple a variable
@@ -572,6 +711,17 @@ class SemanticVisitor(CompiscriptVisitor):
             if expr_type != ERROR_TYPE and not expr_type.can_assign_to(symbol.type):
                 self.add_error(ctx, f"No se puede asignar {expr_type.name} a {symbol.type.name}")
 
+        # GENERACIÓN DE CÓDIGO, para asignación simple
+        if not self.errors:
+            # Obtener el valor de la expresión
+            expr_temp = self.codegen.current_temp
+            
+            # Obtener la dirección de la variable
+            var_address = self.codegen.get_variable_address(var_name)
+            
+            # Generar asignación
+            self.codegen.generate_assignment(var_address, expr_temp, ctx)
+
         return expr_type if expr_type else ERROR_TYPE
 
     # =========================================================================================================
@@ -598,6 +748,8 @@ class SemanticVisitor(CompiscriptVisitor):
         
         return result
     
+    # luego de probar varias veces con prints y logs, realmente parece que esto no hace nada
+    # pero por miedo a romper algo, mejor lo dejo
     def visitIdentifierExpr(self, ctx):
         name = ctx.getText()
         symbol = self.symbol_table.lookup(name)
@@ -606,6 +758,11 @@ class SemanticVisitor(CompiscriptVisitor):
             self.add_error(ctx, f"Identificador '{name}' no declarado")
             return ERROR_TYPE
             
+        # GENERACIÓN DE CÓDIGO
+        if symbol.category == 'variable':
+            temp = self.codegen.generate_load_variable(name, ctx)
+            self.codegen.current_temp = temp
+        
         return symbol.type
         
     def visitFunctionDeclaration(self, ctx):
@@ -1055,6 +1212,9 @@ class SemanticVisitor(CompiscriptVisitor):
             sym = self.symbol_table.lookup(name)
             if isinstance(sym, VariableSymbol):
                 current_type = sym.type
+                # GENERACIÓN DE CÓDIGO - Cargar variable
+                temp = self.codegen.generate_load_variable(name, base)
+                self.codegen.current_temp = temp
             elif isinstance(sym, FunctionSymbol):
                 pending_func = sym
             elif isinstance(sym, ClassSymbol):

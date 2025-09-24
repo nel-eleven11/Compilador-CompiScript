@@ -51,6 +51,11 @@ def main(argv):
             print(error)
     else:
         print("\nAnálisis semántico completado sin errores")
+
+    if analyzer.warnings:
+        print("\nWarnings")
+        for warning in analyzer.warnings:
+            print(warning)
         
     # Mostrar tabla de símbolos (debug)
     print("\n=== Tabla de Símbolos ===")
@@ -58,6 +63,10 @@ def main(argv):
         print(f"\nÁmbito {scope.scope_id} ({scope.scope_type}):")
         for name, symbol in scope.symbols.items():
             print(f"  {symbol}")
+
+    # Mostrar TAC, con cuadruplos
+    print("\n")
+    analyzer.codegen.print_quadruples()
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:

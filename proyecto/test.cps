@@ -1,18 +1,13 @@
-// Operaciones logicas validas
-let a: boolean = true && false;
-let b: boolean = true || false;
-let c: boolean = !true;
+let a:boolean = true;
+let b:boolean = false;
+//let c:boolean = a && b;
+//let d:boolean = a || b;
 
-// Comparaciones validas
-let g: boolean = 5 == 5;
-let h: boolean = "a" == "a";
-let i: boolean = null == null;
-let j: boolean = "texto" == null;
 
-// Operaciones relacionales validas
-let n: boolean = 5 < 10;
-let o: boolean = 10 >= 5;
+let other:boolean = (a && b) || a;
 
-let pa: boolean = (1 == 1) != (2 > 3);
-let pb: boolean = "hola" == null;
-let ps: boolean = true && (5 == 5);
+
+let new_bool:boolean = !other;
+
+let negative:integer = 4;
+let negative_2:integer = -negative;
