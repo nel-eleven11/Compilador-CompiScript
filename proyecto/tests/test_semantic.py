@@ -347,8 +347,8 @@ class TestFunctionSemantics(unittest.TestCase):
         
         # Verificar que hay errores específicos
         error_messages = ' '.join(analyzer.errors)
-        self.assertTrue("espera 2 argumentos, pero recibió 1" in error_messages)
-        self.assertTrue("espera 2 argumentos, pero recibió 3" in error_messages)
+        self.assertTrue("espera 2 argumentos, recibió 1" in error_messages)
+        self.assertTrue("espera 2 argumentos, recibió 3" in error_messages)
         
         print("\n\nPrueba de validación de argumentos de funciones ------------------------------------------")
         print("Esta prueba verifica la detección de errores en llamadas a funciones:")
@@ -575,7 +575,7 @@ class TestFunctionSemantics(unittest.TestCase):
         
         analyzer = self.analyze_code(code)
         self.assertGreater(len(analyzer.errors), 0)
-        self.assertTrue(any("no declarada" in error for error in analyzer.errors))
+        self.assertTrue(any("no declarado" in error for error in analyzer.errors))
 
 class TestControlFlowSemantics(unittest.TestCase):
     """Tests for control flow semantic rules"""
