@@ -400,3 +400,134 @@ class CodeGenerator:
 
         return address_temp
 
+    # ========== FUNCTION METHODS ==========
+
+    def generate_function_declaration(self, function_name, parameters, return_type, body_func, ctx=None):
+        """
+        Genera código para declaración de funciones
+        Incluye el diseño del registro de activación
+        """
+        # Crear registro de activación
+        ar_design = self.create_ar_design(function_name)
+
+        # Agregar parámetros al registro de activación
+        for param_name, param_type in parameters:
+            ar_design.add_parameter(param_name, param_type)
+
+        # Etiqueta de inicio de función
+        func_label = f"FUNC_{function_name}"
+        self.emit_quad('label', None, None, func_label)
+
+        # Prólogo de función: configurar el frame pointer
+        self.emit_quad('enter', str(ar_design.size), None, None)
+
+        # Guardar el contexto actual de función
+        old_function_context = getattr(self, 'function_context', None)
+        self.function_context = {
+            'name': function_name,
+            'ar_design': ar_design,
+            'return_type': return_type,
+            'func_label': func_label
+        }
+
+        # Generar código del cuerpo
+        if body_func:
+            body_func()
+
+        # Si es función void y no hay return explícito, agregar return vacío
+        if return_type and return_type.name == 'void':
+            self.emit_quad('return', None, None, None)
+
+        # Epílogo de función
+        self.emit_quad('leave', None, None, None)
+
+        # Restaurar contexto de función
+        self.function_context = old_function_context
+
+        return {'func_label': func_label, 'ar_design': ar_design}
+
+    def generate_function_call(self, function_name, arguments, ctx=None):
+        """
+        Genera código para llamadas a funciones
+        Patrón:
+        push arg1
+        push arg2
+        ...
+        call FUNC_function_name
+        add sp, n*4  ; limpiar argumentos de la pila
+        t = pop      ; obtener valor de retorno (si hay)
+        """
+        # Obtener diseño del registro de activación
+        ar_design = self.get_ar_design(function_name)
+        if not ar_design:
+            # Si no existe, crear uno básico
+            ar_design = self.create_ar_design(function_name)
+
+        # Push de argumentos en orden reverso (convención C)
+        for arg_temp in reversed(arguments):
+            self.emit_quad('push', arg_temp, None, None)
+
+        # Llamada a la función
+        func_label = f"FUNC_{function_name}"
+        self.emit_quad('call', None, None, func_label)
+
+        # Limpiar argumentos de la pila (caller cleanup)
+        if arguments:
+            args_size = len(arguments) * 4  # 4 bytes por argumento
+            self.emit_quad('add', 'SP', str(args_size), 'SP')
+
+        # Obtener valor de retorno (si la función no es void)
+        result_temp = self.new_temp()
+        self.emit_quad('pop', None, None, result_temp)
+
+        self.current_temp = result_temp
+        return result_temp
+
+    def generate_return_statement(self, value_temp=None, ctx=None):
+        """
+        Genera código para statement return
+        """
+        function_context = getattr(self, 'function_context', None)
+        if not function_context:
+            return None  # Error: return fuera de función (manejado en semántico)
+
+        if value_temp:
+            # Return con valor: almacenar en registro de retorno
+            self.emit_quad('return', value_temp, None, None)
+        else:
+            # Return sin valor (función void)
+            self.emit_quad('return', None, None, None)
+
+        return value_temp
+
+    def generate_parameter_access(self, param_name, ctx=None):
+        """
+        Genera código para acceso a parámetros de función
+        """
+        function_context = getattr(self, 'function_context', None)
+        if not function_context:
+            return self.generate_load_variable(param_name, ctx)
+
+        ar_design = function_context['ar_design']
+        offset = ar_design.get_offset(param_name)
+
+        if offset is not None:
+            # Parámetro encontrado en el registro de activación
+            result_temp = self.new_temp()
+            self.emit_quad('@', f"FP[{offset}]", None, result_temp)
+            return result_temp
+        else:
+            # Fallback a variable normal
+            return self.generate_load_variable(param_name, ctx)
+
+    def add_local_variable_to_ar(self, var_name, var_type):
+        """
+        Agrega una variable local al registro de activación actual
+        """
+        function_context = getattr(self, 'function_context', None)
+        if function_context:
+            ar_design = function_context['ar_design']
+            ar_design.add_local(var_name, var_type)
+            return ar_design.get_offset(var_name)
+        return None
+
