@@ -44,7 +44,7 @@ class ErrorType(Type):
 # Tipos básicos
 INT_TYPE = PrimitiveType("integer", 4)
 BOOL_TYPE = PrimitiveType("boolean", 1)
-STRING_TYPE = PrimitiveType("string", 16)
+STRING_TYPE = PrimitiveType("string", 8)
 VOID_TYPE = Type("void")
 NULL_TYPE = Type("null")
 ERROR_TYPE = ErrorType()
