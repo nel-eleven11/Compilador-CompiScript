@@ -298,3 +298,105 @@ class CodeGenerator:
         self.emit_quad('goto', None, None, continue_label)
         return continue_label
 
+    # ========== ARRAY AND MATRIX METHODS ==========
+
+    def generate_array_access(self, array_name, index_temp, ctx=None):
+        """
+        Genera código para acceso a elementos de array
+        Patrón: t = array[index]
+        """
+        array_address = self.get_variable_address(array_name)
+        result_temp = self.new_temp()
+
+        # Calcular dirección: base + index * size
+        # Asumimos que los arrays son de enteros (4 bytes cada uno)
+        offset_temp = self.new_temp()
+        self.emit_quad('*', index_temp, '4', offset_temp)  # index * 4
+
+        address_temp = self.new_temp()
+        self.emit_quad('+', array_address, offset_temp, address_temp)  # base + offset
+
+        # Carga indirecta
+        self.emit_quad('[]', address_temp, None, result_temp)  # result = [address]
+
+        self.current_temp = result_temp
+        return result_temp
+
+    def generate_array_assignment(self, array_name, index_temp, value_temp, ctx=None):
+        """
+        Genera código para asignación a elementos de array
+        Patrón: array[index] = value
+        """
+        array_address = self.get_variable_address(array_name)
+
+        # Calcular dirección: base + index * size
+        offset_temp = self.new_temp()
+        self.emit_quad('*', index_temp, '4', offset_temp)  # index * 4
+
+        address_temp = self.new_temp()
+        self.emit_quad('+', array_address, offset_temp, address_temp)  # base + offset
+
+        # Asignación indirecta
+        self.emit_quad('[]=', value_temp, None, address_temp)  # [address] = value
+
+        return address_temp
+
+    def generate_matrix_access(self, matrix_name, row_index_temp, col_index_temp, cols_count, ctx=None):
+        """
+        Genera código para acceso a elementos de matriz
+        Patrón: t = matrix[row][col]
+        Dirección = base + (row * cols + col) * size
+        """
+        matrix_address = self.get_variable_address(matrix_name)
+        result_temp = self.new_temp()
+
+        # Calcular offset: row * cols
+        row_offset_temp = self.new_temp()
+        self.emit_quad('*', row_index_temp, str(cols_count), row_offset_temp)
+
+        # Sumar col: (row * cols) + col
+        total_index_temp = self.new_temp()
+        self.emit_quad('+', row_offset_temp, col_index_temp, total_index_temp)
+
+        # Multiplicar por tamaño del elemento
+        offset_temp = self.new_temp()
+        self.emit_quad('*', total_index_temp, '4', offset_temp)  # * 4 para enteros
+
+        # Calcular dirección final
+        address_temp = self.new_temp()
+        self.emit_quad('+', matrix_address, offset_temp, address_temp)
+
+        # Carga indirecta
+        self.emit_quad('[]', address_temp, None, result_temp)
+
+        self.current_temp = result_temp
+        return result_temp
+
+    def generate_matrix_assignment(self, matrix_name, row_index_temp, col_index_temp, cols_count, value_temp, ctx=None):
+        """
+        Genera código para asignación a elementos de matriz
+        Patrón: matrix[row][col] = value
+        """
+        matrix_address = self.get_variable_address(matrix_name)
+
+        # Calcular offset: row * cols
+        row_offset_temp = self.new_temp()
+        self.emit_quad('*', row_index_temp, str(cols_count), row_offset_temp)
+
+        # Sumar col: (row * cols) + col
+        total_index_temp = self.new_temp()
+        self.emit_quad('+', row_offset_temp, col_index_temp, total_index_temp)
+
+        # Multiplicar por tamaño del elemento
+        offset_temp = self.new_temp()
+        self.emit_quad('*', total_index_temp, '4', offset_temp)
+
+        # Calcular dirección final
+        address_temp = self.new_temp()
+        self.emit_quad('+', matrix_address, offset_temp, address_temp)
+
+        # Asignación indirecta
+        self.emit_quad('[]=', value_temp, None, address_temp)
+
+        return address_temp
+
