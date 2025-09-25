@@ -820,8 +820,30 @@ class SemanticVisitor(CompiscriptVisitor):
                 except Exception as e:
                     self.add_error(param_ctx, str(e))
         
-        # Procesar cuerpo de la funcion
-        self.visit(ctx.block())
+        # Generate function code only if no errors
+        if not self.errors:
+            # Prepare parameters for code generation
+            parameters = []
+            if ctx.parameters():
+                for param_ctx in ctx.parameters().parameter():
+                    param_name = param_ctx.Identifier().getText()
+                    param_type = self.get_type_from_ctx(param_ctx.type_() if param_ctx.type_() else None)
+                    parameters.append((param_name, param_type or VOID_TYPE))
+
+            def body_func():
+                self.visit(ctx.block())
+
+            # Generate function declaration code
+            self.codegen.generate_function_declaration(
+                function_name=func_name,
+                parameters=parameters,
+                return_type=return_type,
+                body_func=body_func,
+                ctx=ctx
+            )
+        else:
+            # Still perform semantic analysis
+            self.visit(ctx.block())
         
         # VALIDATE RETURN TYPE - Check if all return statements match declared type
         if return_type != VOID_TYPE:
@@ -852,21 +874,26 @@ class SemanticVisitor(CompiscriptVisitor):
     def visitReturnStatement(self, ctx):
         # Verificar código muerto antes del return
         self.check_unreachable_code(ctx, "statement return")
-        
+
         if not self.current_function:
             self.add_error(ctx, "return fuera de función")
             return
-            
+
         expr_type = self.visit(ctx.expression()) if ctx.expression() else VOID_TYPE
-        
+
         if self.current_function.return_type == VOID_TYPE:
             if ctx.expression():
                 self.add_error(ctx, "Función void no debe retornar valor")
         elif expr_type != self.current_function.return_type:
             self.add_error(ctx, f"Tipo de retorno no coincide. Esperado: {self.current_function.return_type.name}")
-        
+
         self.current_function.return_statements.append(expr_type)
-        
+
+        # Generate return statement code only if no errors
+        if not self.errors and self.current_function:
+            value_temp = self.codegen.current_temp if ctx.expression() else None
+            self.codegen.generate_return_statement(value_temp, ctx)
+
         # Marcar que cualquier código después de este return es inalcanzable
         self.unreachable_code = True
         
@@ -892,24 +919,32 @@ class SemanticVisitor(CompiscriptVisitor):
         
         # Get arguments
         args = []
+        arg_temps = []  # For code generation
         if ctx.arguments():
             for arg_expr in ctx.arguments().expression():
                 arg_type = self.visit(arg_expr)
                 args.append(arg_type)
-        
+                if self.codegen.current_temp:
+                    arg_temps.append(self.codegen.current_temp)
+
         # Validate number of arguments
         expected_params = len(func_symbol.parameters)
         actual_args = len(args)
-        
+
         if actual_args != expected_params:
             self.add_error(ctx, f"Función '{func_name}' espera {expected_params} argumentos, pero recibió {actual_args}")
             return func_symbol.return_type
-        
+
         # Validate argument types
         for i, (param, arg_type) in enumerate(zip(func_symbol.parameters, args)):
             if arg_type != ERROR_TYPE and not arg_type.can_assign_to(param.type):
                 self.add_error(ctx, f"Argumento {i+1} de función '{func_name}': esperado {param.type.name}, encontrado {arg_type.name}")
-        
+
+        # Generate function call code only if no errors
+        if not self.errors:
+            result_temp = self.codegen.generate_function_call(func_name, arg_temps, ctx)
+            self.codegen.current_temp = result_temp
+
         return func_symbol.return_type
     
     # CONTROL FLOW VALIDATION
@@ -917,30 +952,67 @@ class SemanticVisitor(CompiscriptVisitor):
         condition_type = self.visit(ctx.expression())
         if condition_type != BOOL_TYPE and condition_type != ERROR_TYPE:
             self.add_error(ctx.expression(), f"Condición de 'if' debe ser boolean, encontrado {condition_type.name}")
-        
-        # Visit the blocks
-        self.visit(ctx.block(0))  # if block
-        if ctx.block(1):  # else block
-            self.visit(ctx.block(1))
-        
+
+        # Generate code only if no errors
+        if not self.errors:
+            condition_temp = self.codegen.current_temp
+
+            def then_statements():
+                self.visit(ctx.block(0))  # if block
+
+            def else_statements():
+                if ctx.block(1):  # else block exists
+                    self.visit(ctx.block(1))
+
+            # Generate if-else code
+            self.codegen.generate_if_else(
+                condition_temp=condition_temp,
+                then_statements=then_statements if ctx.block(0) else None,
+                else_statements=else_statements if ctx.block(1) else None,
+                ctx=ctx
+            )
+        else:
+            # Still visit for semantic analysis
+            self.visit(ctx.block(0))  # if block
+            if ctx.block(1):  # else block
+                self.visit(ctx.block(1))
+
         return None
     
     def visitWhileStatement(self, ctx):
-        condition_type = self.visit(ctx.expression())
-        if condition_type != BOOL_TYPE and condition_type != ERROR_TYPE:
-            self.add_error(ctx.expression(), f"Condición de 'while' debe ser boolean, encontrado {condition_type.name}")
-        
-        # Enter loop context
+        # Enter loop context first
         prev_in_loop = self.in_loop
         self.in_loop = True
         self.loop_depth += 1
-        
-        self.visit(ctx.block())
-        
+
+        # Generate code only if no errors
+        if not self.errors:
+            def condition_func():
+                condition_type = self.visit(ctx.expression())
+                if condition_type != BOOL_TYPE and condition_type != ERROR_TYPE:
+                    self.add_error(ctx.expression(), f"Condición de 'while' debe ser boolean, encontrado {condition_type.name}")
+                return self.codegen.current_temp
+
+            def body_func():
+                self.visit(ctx.block())
+
+            # Generate while loop code
+            self.codegen.generate_while_loop(
+                condition_func=condition_func,
+                body_func=body_func,
+                ctx=ctx
+            )
+        else:
+            # Still perform semantic analysis
+            condition_type = self.visit(ctx.expression())
+            if condition_type != BOOL_TYPE and condition_type != ERROR_TYPE:
+                self.add_error(ctx.expression(), f"Condición de 'while' debe ser boolean, encontrado {condition_type.name}")
+            self.visit(ctx.block())
+
         # Exit loop context
         self.loop_depth -= 1
         self.in_loop = prev_in_loop or self.loop_depth > 0
-        
+
         return None
     
     def visitDoWhileStatement(self, ctx):
@@ -964,37 +1036,67 @@ class SemanticVisitor(CompiscriptVisitor):
     def visitForStatement(self, ctx):
         # Create new scope for for loop
         self.symbol_table.enter_scope("for")
-        
-        # Visit initialization
-        if ctx.variableDeclaration():
-            self.visit(ctx.variableDeclaration())
-        elif ctx.assignment():
-            self.visit(ctx.assignment())
-        
-        # Visit condition
-        if ctx.expression(0):  # condition expression
-            condition_type = self.visit(ctx.expression(0))
-            if condition_type != BOOL_TYPE and condition_type != ERROR_TYPE:
-                self.add_error(ctx.expression(0), f"Condición de 'for' debe ser boolean, encontrado {condition_type.name}")
-        
-        # Visit increment
-        if ctx.expression(1):  # increment expression
-            self.visit(ctx.expression(1))
-        
+
         # Enter loop context
         prev_in_loop = self.in_loop
         self.in_loop = True
         self.loop_depth += 1
-        
-        self.visit(ctx.block())
-        
+
+        # Generate code only if no errors
+        if not self.errors:
+            def init_func():
+                if ctx.variableDeclaration():
+                    self.visit(ctx.variableDeclaration())
+                elif ctx.assignment():
+                    self.visit(ctx.assignment())
+
+            def condition_func():
+                if ctx.expression(0):  # condition expression
+                    condition_type = self.visit(ctx.expression(0))
+                    if condition_type != BOOL_TYPE and condition_type != ERROR_TYPE:
+                        self.add_error(ctx.expression(0), f"Condición de 'for' debe ser boolean, encontrado {condition_type.name}")
+                    return self.codegen.current_temp
+                return None
+
+            def update_func():
+                if ctx.expression(1):  # increment expression
+                    self.visit(ctx.expression(1))
+
+            def body_func():
+                self.visit(ctx.block())
+
+            # Generate for loop code
+            self.codegen.generate_for_loop(
+                init_func=init_func if (ctx.variableDeclaration() or ctx.assignment()) else None,
+                condition_func=condition_func if ctx.expression(0) else None,
+                update_func=update_func if ctx.expression(1) else None,
+                body_func=body_func,
+                ctx=ctx
+            )
+        else:
+            # Still perform semantic analysis
+            if ctx.variableDeclaration():
+                self.visit(ctx.variableDeclaration())
+            elif ctx.assignment():
+                self.visit(ctx.assignment())
+
+            if ctx.expression(0):  # condition expression
+                condition_type = self.visit(ctx.expression(0))
+                if condition_type != BOOL_TYPE and condition_type != ERROR_TYPE:
+                    self.add_error(ctx.expression(0), f"Condición de 'for' debe ser boolean, encontrado {condition_type.name}")
+
+            if ctx.expression(1):  # increment expression
+                self.visit(ctx.expression(1))
+
+            self.visit(ctx.block())
+
         # Exit loop context
         self.loop_depth -= 1
         self.in_loop = prev_in_loop or self.loop_depth > 0
-        
+
         # Exit for scope
         self.symbol_table.exit_scope()
-        
+
         return None
     
     def visitForeachStatement(self, ctx):
@@ -1042,20 +1144,29 @@ class SemanticVisitor(CompiscriptVisitor):
     def visitBreakStatement(self, ctx):
         # Verificar código muerto antes del break
         self.check_unreachable_code(ctx, "statement break")
-        
+
         if not self.in_loop:
             self.add_error(ctx, "break solo puede usarse dentro de un bucle")
-        
+
+        # Generate code only if no errors and we're in a loop
+        if not self.errors and self.in_loop:
+            self.codegen.generate_break(ctx)
+
         # Marcar que cualquier código después de este break es inalcanzable
         self.unreachable_code = True
         return None
-    
+
     def visitContinueStatement(self, ctx):
         # Verificar código muerto antes del continue
         self.check_unreachable_code(ctx, "statement continue")
-        
+
         if not self.in_loop:
             self.add_error(ctx, "continue solo puede usarse dentro de un bucle")
+
+        # Generate code only if no errors and we're in a loop
+        if not self.errors and self.in_loop:
+            self.codegen.generate_continue(ctx)
+
         # Marcar que cualquier código después de este continue es inalcanzable
         self.unreachable_code = True
         return None
