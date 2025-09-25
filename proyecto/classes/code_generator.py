@@ -69,19 +69,30 @@ class CodeGenerator:
         if not symbol:
             return f"UNDEFINED_{var_name}"
             
-        # Variables globales 
+        # Variables globales
         if symbol.scope_id == 0:
             size = self.get_type_size(symbol.type)
-            address = self.memory_manager.allocate_global(var_name, size)
-            return f"0x{address:04X}"  # Dirección hexadecimal
-            
-        # Variables locales (por implementar) - ahora mismo tiene representaciones simbólicas por ahora
-        # pero para las funciones hay que modificarlo tambien
+
+            # Para arrays, alocar en heap
+            if hasattr(symbol.type, 'element_type'):  # Es un array
+                # Estimamos 10 elementos por defecto si no se especifica
+                element_count = 10  # TODO: obtener el tamaño real del array
+                address = self.memory_manager.allocate_array(var_name, element_count, size)
+                return f"0x{address:04X}"
+            else:
+                # Variable simple global
+                address = self.memory_manager.allocate_global(var_name, size)
+                return f"0x{address:04X}"
+
+        # Variables locales
         if self.current_ar:
-            offset = self.current_ar.get_offset(var_name)
-            if offset is not None:
-                return f"FP[{offset}]"
-                
+            function_name = self.current_ar.function_name
+            size = self.get_type_size(symbol.type)
+
+            # Usar el MemoryManager para variables locales
+            address = self.memory_manager.allocate_local(var_name, size, function_name)
+            return address  # Ya retorna "FP[offset]"
+
         return f"UNKNOWN_{var_name}"
         
     def get_quadruples(self):
@@ -93,9 +104,20 @@ class CodeGenerator:
         """Imprime el mapa de memoria para debugging"""
         print("=== MAPA DE MEMORIA ===")
         for var_name, address in self.memory_manager.allocations.items():
-            symbol = self.symbol_table.lookup(var_name)
-            type_name = symbol.type.name if symbol and symbol.type else "unknown"
-            print(f"0x{address:04X}: {var_name} ({type_name})")
+            # Separar variables locales (que contienen ::)
+            if "::" in var_name:
+                func_name, local_var = var_name.split("::", 1)
+                symbol = self.symbol_table.lookup(local_var)
+                type_name = symbol.type.name if symbol and symbol.type else "unknown"
+                print(f"{address}: {func_name}::{local_var} ({type_name})")
+            else:
+                symbol = self.symbol_table.lookup(var_name)
+                type_name = symbol.type.name if symbol and symbol.type else "unknown"
+                # Verificar si address es numérico o string
+                if isinstance(address, int):
+                    print(f"0x{address:04X}: {var_name} ({type_name})")
+                else:
+                    print(f"{address}: {var_name} ({type_name})")
         
     def print_quadruples(self):
         """Imprime todos los cuádruplos generados"""
@@ -338,10 +360,15 @@ class CodeGenerator:
         array_address = self.get_variable_address(array_name)
         result_temp = self.new_temp()
 
+        # Obtener tamaño del elemento
+        symbol = self.symbol_table.lookup(array_name)
+        element_size = 4  # Default
+        if symbol and hasattr(symbol.type, 'element_type'):
+            element_size = self.get_type_size(symbol.type.element_type)
+
         # Calcular dirección: base + index * size
-        # Asumimos que los arrays son de enteros (4 bytes cada uno)
         offset_temp = self.new_temp()
-        self.emit_quad('*', index_temp, '4', offset_temp)  # index * 4
+        self.emit_quad('*', index_temp, str(element_size), offset_temp)  # index * element_size
 
         address_temp = self.new_temp()
         self.emit_quad('+', array_address, offset_temp, address_temp)  # base + offset
@@ -558,6 +585,12 @@ class CodeGenerator:
         if function_context:
             ar_design = function_context['ar_design']
             ar_design.add_local(var_name, var_type)
+
+            # También registrar en el memory manager
+            function_name = function_context['name']
+            size = self.get_type_size(var_type)
+            self.memory_manager.allocate_local(var_name, size, function_name)
+
             return ar_design.get_offset(var_name)
         return None
 
