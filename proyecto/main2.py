@@ -68,6 +68,9 @@ def main(argv):
     print("\n")
     analyzer.codegen.print_quadruples()
 
+    print("\n")
+    analyzer.codegen.print_memory_map()
+
 if __name__ == '__main__':
     if len(sys.argv) < 2:
         # Si no hay argumentos, ejecutar pruebas

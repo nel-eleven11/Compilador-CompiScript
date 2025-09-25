@@ -1,6 +1,7 @@
 # classes/code_generator.py
 from .quadruple import Quadruple
 from .activation_record_design import ActivationRecordDesign
+from .memory_manager import MemoryManager
 
 class CodeGenerator:
     def __init__(self, symbol_table):
@@ -11,6 +12,26 @@ class CodeGenerator:
         self.ar_designs = {}  # function_name que usa -> ActivationRecordDesign
         self.current_ar = None
         self.current_temp = None
+        self.memory_manager = MemoryManager()
+
+    def get_type_size(self, type_obj):
+        """Calcula el tamaño de un tipo en bytes"""
+        if hasattr(type_obj, 'width') and type_obj.width:
+            # un print de dbug que puse para ver si estamos usando el tamaño
+            # si lo usamos, pero luego en el memory_manager fijamos espacio a 4bytes con el fin
+            # de hacer mas facil el calculo y acceso a datos
+            #print("se uso width: ", type_obj.width)
+            return type_obj.width
+        
+        # Valores por defecto basados en el tipo
+        type_sizes = {
+            'integer': 4,
+            'boolean': 1,
+            'string': 8,  # Puntero a string
+            'void': 0,
+            'null': 4,    # Puntero
+        }
+        return type_sizes.get(type_obj.name, 4)
         
     def new_temp(self):
         """Genera un nuevo temporal"""
@@ -46,26 +67,35 @@ class CodeGenerator:
         # Buscar la variable en la tabla de símbolos
         symbol = self.symbol_table.lookup(var_name)
         if not symbol:
-            return f"UNDEFINED_{var_name}"  # Para manejar errores
+            return f"UNDEFINED_{var_name}"
             
-        # Si es global
-        if symbol.scope_id == 0:  # el scope global es el primero entonces es 0
-            return f"G_{var_name}"
+        # Variables globales 
+        if symbol.scope_id == 0:
+            size = self.get_type_size(symbol.type)
+            address = self.memory_manager.allocate_global(var_name, size)
+            return f"0x{address:04X}"  # Dirección hexadecimal
             
-        # Si es local a una función
+        # Variables locales (por implementar) - ahora mismo tiene representaciones simbólicas por ahora
+        # pero para las funciones hay que modificarlo tambien
         if self.current_ar:
             offset = self.current_ar.get_offset(var_name)
             if offset is not None:
-                return f"FP[{offset}]"  # Frame Pointer + offset
+                return f"FP[{offset}]"
                 
-        # Si es de una clase (atributo)
-        # NOTA IMPORTANTE: Esto requerira mas implementación cuando se haga
-        # la parte relacionada a las clases
-        return f"OBJ_{var_name}"
+        return f"UNKNOWN_{var_name}"
         
     def get_quadruples(self):
         """Devuelve la lista de cuádruplos generados"""
         return self.quadruples
+    
+    # En CodeGenerator
+    def print_memory_map(self):
+        """Imprime el mapa de memoria para debugging"""
+        print("=== MAPA DE MEMORIA ===")
+        for var_name, address in self.memory_manager.allocations.items():
+            symbol = self.symbol_table.lookup(var_name)
+            type_name = symbol.type.name if symbol and symbol.type else "unknown"
+            print(f"0x{address:04X}: {var_name} ({type_name})")
         
     def print_quadruples(self):
         """Imprime todos los cuádruplos generados"""
