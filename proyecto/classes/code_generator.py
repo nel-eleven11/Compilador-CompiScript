@@ -531,3 +531,101 @@ class CodeGenerator:
             return ar_design.get_offset(var_name)
         return None
 
+    # ========== COMPARISON AND LOGICAL OPERATIONS ==========
+
+    def generate_comparison(self, left_temp, right_temp, operator, ctx=None):
+        """
+        Genera código para operaciones de comparación
+        Operadores: ==, !=, <, <=, >, >=
+        """
+        result_temp = self.new_temp()
+        self.emit_quad(operator, left_temp, right_temp, result_temp)
+        self.current_temp = result_temp
+        return result_temp
+
+    def generate_logical_operation(self, left_temp, right_temp, operator, ctx=None):
+        """
+        Genera código para operaciones lógicas (&&, ||)
+        Utiliza evaluación con cortocircuito
+        """
+        if operator == '&&':
+            return self._generate_and_operation(left_temp, right_temp, ctx)
+        elif operator == '||':
+            return self._generate_or_operation(left_temp, right_temp, ctx)
+        else:
+            # Operación lógica simple
+            result_temp = self.new_temp()
+            self.emit_quad(operator, left_temp, right_temp, result_temp)
+            self.current_temp = result_temp
+            return result_temp
+
+    def _generate_and_operation(self, left_temp, right_temp, ctx=None):
+        """
+        Genera código para AND con cortocircuito
+        Patrón:
+        if !left goto L1
+        result = right
+        goto L2
+        L1: result = false
+        L2: (continuar)
+        """
+        result_temp = self.new_temp()
+        label_false = self.new_label()
+        label_end = self.new_label()
+
+        # Si left es falso, resultado es falso
+        self.emit_quad('if_false', left_temp, None, label_false)
+
+        # Si left es verdadero, resultado depende de right
+        self.emit_quad('=', right_temp, None, result_temp)
+        self.emit_quad('goto', None, None, label_end)
+
+        # Caso falso
+        self.emit_quad('label', None, None, label_false)
+        self.emit_quad('=', 'false', None, result_temp)
+
+        # Continuación
+        self.emit_quad('label', None, None, label_end)
+
+        self.current_temp = result_temp
+        return result_temp
+
+    def _generate_or_operation(self, left_temp, right_temp, ctx=None):
+        """
+        Genera código para OR con cortocircuito
+        Patrón:
+        if left goto L1
+        result = right
+        goto L2
+        L1: result = true
+        L2: (continuar)
+        """
+        result_temp = self.new_temp()
+        label_true = self.new_label()
+        label_end = self.new_label()
+
+        # Si left es verdadero, resultado es verdadero
+        self.emit_quad('if', left_temp, None, label_true)
+
+        # Si left es falso, resultado depende de right
+        self.emit_quad('=', right_temp, None, result_temp)
+        self.emit_quad('goto', None, None, label_end)
+
+        # Caso verdadero
+        self.emit_quad('label', None, None, label_true)
+        self.emit_quad('=', 'true', None, result_temp)
+
+        # Continuación
+        self.emit_quad('label', None, None, label_end)
+
+        self.current_temp = result_temp
+        return result_temp
+
+    def generate_logical_not(self, operand_temp, ctx=None):
+        """
+        Genera código para NOT lógico
+        """
+        result_temp = self.new_temp()
+        self.emit_quad('!', operand_temp, None, result_temp)
+        self.current_temp = result_temp
+        return result_temp
