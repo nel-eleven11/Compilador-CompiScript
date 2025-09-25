@@ -126,3 +126,175 @@ class CodeGenerator:
         address = self.get_variable_address(const_name)
         self.generate_assignment(address, initial_value, ctx)
         return address
+
+    # ========== CONTROL FLOW METHODS ==========
+
+    def generate_if_else(self, condition_temp, then_statements=None, else_statements=None, ctx=None):
+        """
+        Genera código para if-else con etiquetas y saltos
+        Patrón:
+        if condition_temp goto L1
+        goto L2
+        L1: then_statements
+        goto L3
+        L2: else_statements
+        L3: (continuación)
+        """
+        label_then = self.new_label()  # L1
+        label_else = self.new_label()  # L2
+        label_end = self.new_label()   # L3
+
+        # Salto condicional: si la condición es verdadera, ir a then
+        self.emit_quad('if', condition_temp, None, label_then)
+
+        # Si la condición es falsa, ir a else
+        self.emit_quad('goto', None, None, label_else)
+
+        # Etiqueta then
+        self.emit_quad('label', None, None, label_then)
+        if then_statements:
+            then_statements()  # Ejecutar las declaraciones del then
+        self.emit_quad('goto', None, None, label_end)
+
+        # Etiqueta else
+        self.emit_quad('label', None, None, label_else)
+        if else_statements:
+            else_statements()  # Ejecutar las declaraciones del else
+
+        # Etiqueta final
+        self.emit_quad('label', None, None, label_end)
+
+        return {'then_label': label_then, 'else_label': label_else, 'end_label': label_end}
+
+    def generate_while_loop(self, condition_func, body_func, ctx=None):
+        """
+        Genera código para bucles while
+        Patrón:
+        L1: (inicio del bucle)
+        if !condition goto L2
+        body_statements
+        goto L1
+        L2: (fin del bucle)
+        """
+        label_start = self.new_label()   # L1
+        label_end = self.new_label()     # L2
+
+        # Guardar contexto de bucle para break/continue
+        old_loop_context = getattr(self, 'loop_context', None)
+        self.loop_context = {
+            'start_label': label_start,
+            'end_label': label_end,
+            'type': 'while'
+        }
+
+        # Etiqueta de inicio del bucle
+        self.emit_quad('label', None, None, label_start)
+
+        # Evaluar condición
+        condition_temp = condition_func() if condition_func else None
+        if condition_temp:
+            # Si la condición es falsa, salir del bucle
+            self.emit_quad('if_false', condition_temp, None, label_end)
+
+        # Cuerpo del bucle
+        if body_func:
+            body_func()
+
+        # Salto incondicional al inicio
+        self.emit_quad('goto', None, None, label_start)
+
+        # Etiqueta de fin del bucle
+        self.emit_quad('label', None, None, label_end)
+
+        # Restaurar contexto de bucle
+        self.loop_context = old_loop_context
+
+        return {'start_label': label_start, 'end_label': label_end}
+
+    def generate_for_loop(self, init_func, condition_func, update_func, body_func, ctx=None):
+        """
+        Genera código para bucles for
+        Patrón:
+        init_statements
+        L1: (inicio del bucle)
+        if !condition goto L3
+        body_statements
+        L2: (continue apunta aquí)
+        update_statements
+        goto L1
+        L3: (fin del bucle)
+        """
+        label_start = self.new_label()      # L1
+        label_continue = self.new_label()   # L2
+        label_end = self.new_label()        # L3
+
+        # Guardar contexto de bucle para break/continue
+        old_loop_context = getattr(self, 'loop_context', None)
+        self.loop_context = {
+            'start_label': label_start,
+            'continue_label': label_continue,
+            'end_label': label_end,
+            'type': 'for'
+        }
+
+        # Inicialización
+        if init_func:
+            init_func()
+
+        # Etiqueta de inicio del bucle
+        self.emit_quad('label', None, None, label_start)
+
+        # Evaluar condición
+        condition_temp = condition_func() if condition_func else None
+        if condition_temp:
+            # Si la condición es falsa, salir del bucle
+            self.emit_quad('if_false', condition_temp, None, label_end)
+
+        # Cuerpo del bucle
+        if body_func:
+            body_func()
+
+        # Etiqueta de continue
+        self.emit_quad('label', None, None, label_continue)
+
+        # Actualización
+        if update_func:
+            update_func()
+
+        # Salto incondicional al inicio
+        self.emit_quad('goto', None, None, label_start)
+
+        # Etiqueta de fin del bucle
+        self.emit_quad('label', None, None, label_end)
+
+        # Restaurar contexto de bucle
+        self.loop_context = old_loop_context
+
+        return {'start_label': label_start, 'continue_label': label_continue, 'end_label': label_end}
+
+    def generate_break(self, ctx=None):
+        """Genera código para break - salta al final del bucle actual"""
+        loop_context = getattr(self, 'loop_context', None)
+        if not loop_context:
+            return None  # Error: break fuera de bucle (manejado en semántico)
+
+        end_label = loop_context['end_label']
+        self.emit_quad('goto', None, None, end_label)
+        return end_label
+
+    def generate_continue(self, ctx=None):
+        """Genera código para continue - salta al inicio/continue del bucle actual"""
+        loop_context = getattr(self, 'loop_context', None)
+        if not loop_context:
+            return None  # Error: continue fuera de bucle (manejado en semántico)
+
+        # Para while, continue va al inicio
+        # Para for, continue va a la etiqueta de actualización
+        if loop_context['type'] == 'for':
+            continue_label = loop_context['continue_label']
+        else:
+            continue_label = loop_context['start_label']
+
+        self.emit_quad('goto', None, None, continue_label)
+        return continue_label
+
