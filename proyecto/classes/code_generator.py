@@ -107,8 +107,20 @@ class CodeGenerator:
             # Separar variables locales (que contienen ::)
             if "::" in var_name:
                 func_name, local_var = var_name.split("::", 1)
-                symbol = self.symbol_table.lookup(local_var)
-                type_name = symbol.type.name if symbol and symbol.type else "unknown"
+
+                # Buscar en todos los scopes de la tabla de símbolos
+                symbol = None
+                type_name = "unknown"
+
+                # Buscar en todos los scopes disponibles
+                for scope in self.symbol_table.all_scopes:
+                    if local_var in scope.symbols:
+                        symbol = scope.symbols[local_var]
+                        break
+
+                if symbol and hasattr(symbol, 'type') and symbol.type:
+                    type_name = symbol.type.name
+
                 print(f"{address}: {func_name}::{local_var} ({type_name})")
             else:
                 symbol = self.symbol_table.lookup(var_name)
