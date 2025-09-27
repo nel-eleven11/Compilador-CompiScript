@@ -175,14 +175,14 @@ with c3:
 try:
     vista = st.segmented_control(
         "Vista",
-        options=["Código", "Árbol Sintáctico", "Errores", "Tabla de Símbolos", "Mensajes"],
+        options=["Código", "Árbol Sintáctico", "Errores", "Tabla de Símbolos", "Mensajes", "Código Intermedio"],
         default=st.session_state.vista,
     )
 except Exception:
     vista = st.radio(
         "Vista",
-        ["Código", "Árbol Sintáctico", "Errores", "Tabla de Símbolos", "Mensajes"],
-        index=["Código", "Árbol Sintáctico", "Errores", "Tabla de Símbolos", "Mensajes"].index(st.session_state.vista),
+        ["Código", "Árbol Sintáctico", "Errores", "Tabla de Símbolos", "Mensajes", "Código Intermedio"],
+        index=["Código", "Árbol Sintáctico", "Errores", "Tabla de Símbolos", "Mensajes", "Código Intermedio"].index(st.session_state.vista),
         horizontal=True,
     )
 st.session_state.vista = vista
@@ -278,4 +278,10 @@ elif vista == "Errores":
                 st.error(f"{i}. {msg}{where}")
             else:
                 st.error(f"{i}. {e}")
+
+elif vista == "Código Intermedio":
+    st.subheader("Código Intermedio")
+    st.caption("Próximamente: aquí se mostrará el código intermedio generado por el compilador.")
+    st.write("- (placeholder)")
+
 
