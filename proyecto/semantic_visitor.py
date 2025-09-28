@@ -1367,6 +1367,31 @@ class SemanticVisitor(CompiscriptVisitor):
             elif len(arg_types) != 0:
                 self.add_error(base, f"Clase '{class_name}' no define constructor; se esperaban 0 argumentos")
 
+            # Instanciación y constructor
+            # Recolectar temporales de argumentos
+            arg_types = []
+            arg_temps = []
+            if base.arguments():
+                for e in base.arguments().expression():
+                    t = self.visit(e)
+                    arg_types.append(t)
+                    arg_temps.append(self.codegen.current_temp)
+
+            # Instanciar objeto en heap
+            obj_temp = self.codegen.instantiate_object(class_name)
+
+            # Si hay constructor válido y no se han levantado errores, invocarlo
+            if ctor and not self.errors:
+                self.codegen.generate_method_call(
+                    this_temp=obj_temp,
+                    class_name=class_name,
+                    method_name="constructor",
+                    arguments=arg_temps,
+                    ctx=base
+                )
+
+            # Devolver el tipo de la clase; dejar el 'this' en current_temp
+            self.codegen.current_temp = obj_temp
             current_type = self._class_type(class_name)
 
         elif isinstance(base, CompiscriptParser.ThisExprContext):
@@ -1420,6 +1445,9 @@ class SemanticVisitor(CompiscriptVisitor):
             elif isinstance(s, CompiscriptParser.PropertyAccessExprContext):
                 member = s.Identifier().getText()
 
+                obj_temp_for_method = self.codegen.current_temp
+
+
                 # Resolver clase del tipo actual
                 cls = self._lookup_class(current_type.name) if current_type else None
                 if not cls:
@@ -1431,6 +1459,13 @@ class SemanticVisitor(CompiscriptVisitor):
                     found = self.symbol_table.lookup_in_class(cls.name, member)
 
                     if isinstance(found, VariableSymbol):
+                        # Carga de atributo: t = [obj + offset]
+                        load_temp = self.codegen.generate_property_load(
+                            base_temp=obj_temp_for_method,
+                            class_name=cls.name,
+                            member_name=member,
+                            ctx=s
+                        )
                         current_type = found.type
                         pending_func = None
 
@@ -1438,16 +1473,30 @@ class SemanticVisitor(CompiscriptVisitor):
                         # ¿Se invoca de inmediato?
                         if i + 1 < len(suffixes) and isinstance(suffixes[i + 1], CompiscriptParser.CallExprContext):
                             call = suffixes[i + 1]
-                            args = []
+                            # Recolectar tipos y temporales de argumentos
+                            args_types = []
+                            args_temps = []
                             if call.arguments():
                                 for e in call.arguments().expression():
-                                    args.append(self.visit(e))
-                            if len(args) != len(found.parameters):
-                                self.add_error(call, f"Método '{member}' espera {len(found.parameters)} argumentos, recibió {len(args)}")
+                                    t = self.visit(e)
+                                    args_types.append(t)
+                                    args_temps.append(self.codegen.current_temp)
+                            if len(args_types) != len(found.parameters):
+                                self.add_error(call, f"Método '{member}' espera {len(found.parameters)} argumentos, recibió {len(args_types)}")
                             else:
-                                for j, (p, a) in enumerate(zip(found.parameters, args), start=1):
+                                for j, (p, a) in enumerate(zip(found.parameters, args_types), start=1):
                                     if a != ERROR_TYPE and not a.can_assign_to(p.type):
                                         self.add_error(call, f"Argumento {j} de método '{member}': esperado {p.type.name}, encontrado {a.name}")
+                            if not self.errors:
+                                result_temp = self.codegen.generate_method_call(
+                                    this_temp=obj_temp_for_method,
+                                    class_name=cls.name,
+                                    method_name=member,
+                                    arguments=args_temps,
+                                    ctx=call
+                                )
+                                self.codegen.current_temp = result_temp
+
                             current_type = found.return_type
                             i += 1  # consumimos el CallExpr
                             pending_func = None
