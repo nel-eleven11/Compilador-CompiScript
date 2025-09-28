@@ -45,6 +45,8 @@ if "symbols" not in st.session_state:
     st.session_state.symbols = []
 if "editor_widget" not in st.session_state:
     st.session_state.editor_widget = st.session_state.code_input
+if "quadruples" not in st.session_state:
+    st.session_state.quadruples = []
 
 # ---------- Utilidades ----------
 def ensure_grammar_generated() -> str:
@@ -107,6 +109,7 @@ def compile_current_code() -> None:
         # Guardar datos estructurados en sesión
         st.session_state.last_errors = result.get("errors", [])
         st.session_state.symbols = result.get("symbols", [])
+        st.session_state.quadruples = result.get("quadruples", [])
 
         st.session_state.output_text = "Compilación finalizada. Revisa Árbol, Errores, Tabla de Símbolos y Mensajes."
         st.session_state.locked = True
@@ -280,8 +283,16 @@ elif vista == "Errores":
                 st.error(f"{i}. {e}")
 
 elif vista == "Código Intermedio":
-    st.subheader("Código Intermedio")
-    st.caption("Próximamente: aquí se mostrará el código intermedio generado por el compilador.")
-    st.write("- (placeholder)")
-
+    st.subheader("Código Intermedio (Cuádruplos)")
+    quads = st.session_state.get("quadruples", [])
+    if not quads:
+        st.info("Aún no hay cuádruplos. Compila primero.")
+    else:
+        # Mostrar los cuadruplos
+        lines = [
+            f"{i}: ({q.get('op')}, {q.get('arg1')}, {q.get('arg2')}, {q.get('result')})"
+            for i, q in enumerate(quads)
+        ]
+        st.text_area("Cuádruplos generados", value="\n".join(lines), height=380, disabled=True)
+    st.caption("El mapa de memoria aparece en la vista 'Mensajes' junto con el resto del log.")
 
