@@ -1297,6 +1297,13 @@ class SemanticVisitor(CompiscriptVisitor):
                 sym = self.symbol_table.lookup(const_name, current_scope_only=True)
                 if isinstance(sym, VariableSymbol):
                     cls_sym.add_attribute(sym)
+        
+        # Construir/registrar layout de clase para TAC
+        try:
+            self.codegen.define_class_layout(cls_sym)
+        except Exception:
+            # Fallback silencioso para no romper en caso de tipos incompletos
+            pass
 
         # Salir de la clase
         self.symbol_table.exit_scope()
