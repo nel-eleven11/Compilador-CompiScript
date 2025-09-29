@@ -8,7 +8,7 @@ from contextlib import redirect_stdout
 
 import streamlit as st
 
-st.set_page_config(page_title="Mini IDE", layout="wide")
+st.set_page_config(page_title="IDE CompiScript", layout="wide")
 
 # --- Rutas ---
 IDE_DIR = Path(__file__).resolve().parent
@@ -111,7 +111,7 @@ def compile_current_code() -> None:
         st.session_state.symbols = result.get("symbols", [])
         st.session_state.quadruples = result.get("quadruples", [])
 
-        st.session_state.output_text = "Compilación finalizada. Revisa Árbol, Errores, Tabla de Símbolos y Mensajes."
+        st.session_state.output_text = "Compilación finalizada. Revisa Árbol, Errores, Tabla de Símbolos, Mensajes y Código Intermedio."
         st.session_state.locked = True
         st.session_state.last_compile_ok = True
 
@@ -283,16 +283,16 @@ elif vista == "Errores":
                 st.error(f"{i}. {e}")
 
 elif vista == "Código Intermedio":
-    st.subheader("Código Intermedio (Cuádruplos)")
+    st.subheader("Código Intermedio")
     quads = st.session_state.get("quadruples", [])
     if not quads:
-        st.info("Aún no hay cuádruplos. Compila primero.")
+        st.info("Aún no hay código intermedio. Compila primero.")
     else:
         # Mostrar los cuadruplos
         lines = [
             f"{i}: ({q.get('op')}, {q.get('arg1')}, {q.get('arg2')}, {q.get('result')})"
             for i, q in enumerate(quads)
         ]
-        st.text_area("Cuádruplos generados", value="\n".join(lines), height=380, disabled=True)
+        st.text_area("Código intermedio generado", value="\n".join(lines), height=380, disabled=True)
     st.caption("El mapa de memoria aparece en la vista 'Mensajes' junto con el resto del log.")
 
