@@ -76,3 +76,11 @@ class MemoryManager:
     
     def get_variable_address(self, var_name):
         return self.allocations.get(var_name)
+
+    def allocate_object(self, class_name, size):
+        """
+        Aloca un objeto (instancia de clase) en el heap y retorna la
+        dirección base. Se apoya en allocate_heap.
+        """
+        address = self.allocate_heap(size, object_type=class_name)
+        return address

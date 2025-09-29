@@ -13,6 +13,7 @@ class CodeGenerator:
         self.current_ar = None
         self.current_temp = None
         self.memory_manager = MemoryManager()
+        self.class_layouts = {}
 
     def get_type_size(self, type_obj):
         """Calcula el tamaño de un tipo en bytes"""
@@ -702,5 +703,118 @@ class CodeGenerator:
         """
         result_temp = self.new_temp()
         self.emit_quad('!', operand_temp, None, result_temp)
+        self.current_temp = result_temp
+        return result_temp
+
+    #========= CLASSES AND OBJECTS ==========
+
+    def define_class_layout(self, class_symbol):
+        """
+        Construye (si no existe) el layout de la clase con offsets de atributos
+        y tamaño total de la instancia, considerando herencia.
+        """
+        name = getattr(class_symbol, "name", None)
+        if not name:
+            return None
+        if name in self.class_layouts:
+            return self.class_layouts[name]
+
+        # Herencia: comenzar con el layout del padre (si hay)
+        base_size = 0
+        fields = {}
+        parent = getattr(class_symbol, "parent_class", None)
+        if parent:
+            parent_layout = self.define_class_layout(parent)
+            if parent_layout:
+                base_size = parent_layout["size"]
+                fields.update(parent_layout["fields"])
+
+        # Alinear a 4 bytes
+        def _align4(n): 
+            return n if n % 4 == 0 else n + (4 - (n % 4))
+
+        offset = _align4(base_size)
+        # Atributos propios
+        for attr_name, attr_sym in class_symbol.attributes.items():
+            sz = self.get_type_size(attr_sym.type) if getattr(attr_sym, "type", None) else 4
+            offset = _align4(offset)
+            fields[attr_name] = {"offset": offset, "type": getattr(attr_sym, "type", None)}
+            offset += sz
+
+        layout = {"size": offset, "fields": fields}
+        self.class_layouts[name] = layout
+        return layout
+
+    def instantiate_object(self, class_name):
+        """
+        Emite TAC para crear una nueva instancia:
+        - Reserva memoria en heap usando el layout de la clase
+        - Devuelve un temporal con la dirección base de la instancia
+        """
+        layout = self.class_layouts.get(class_name)
+        if not layout:
+            # Si aún no se definió, crear layout vacío (fallback) para no romper
+            layout = {"size": 0, "fields": {}}
+            self.class_layouts[class_name] = layout
+
+        addr = self.memory_manager.allocate_object(class_name, layout["size"])
+        temp = self.new_temp()
+        # Guardamos la dirección como inmediato (puede refactorizarse a un 'alloc' si deseas)
+        self.emit_quad('=', f"0x{addr:04X}", None, temp)
+        self.current_temp = temp
+        return temp
+
+    def property_address(self, base_temp, class_name, member_name):
+        """
+        Calcula la dirección (base + offset) de un atributo de objeto.
+        Devuelve un temporal con la dirección efectiva.
+        """
+        layout = self.class_layouts.get(class_name, {})
+        fields = layout.get("fields", {})
+        info = fields.get(member_name, {"offset": 0})
+        off = info["offset"]
+        addr_temp = self.new_temp()
+        self.emit_quad('+', base_temp, str(off), addr_temp)
+        return addr_temp
+
+    def generate_property_load(self, base_temp, class_name, member_name, ctx=None):
+        """
+        Carga el valor de un atributo del objeto: result = [base + offset]
+        """
+        addr_temp = self.property_address(base_temp, class_name, member_name)
+        result_temp = self.new_temp()
+        self.emit_quad('[]', addr_temp, None, result_temp)
+        self.current_temp = result_temp
+        return result_temp
+
+    def generate_property_store(self, base_temp, class_name, member_name, value_temp, ctx=None):
+        """
+        Almacena un valor en un atributo del objeto: [base + offset] = value
+        """
+        addr_temp = self.property_address(base_temp, class_name, member_name)
+        self.emit_quad('[]=', value_temp, None, addr_temp)
+        return addr_temp
+
+    def generate_method_call(self, this_temp, class_name, method_name, arguments, ctx=None):
+        """
+        Llamada a método de instancia:
+        - Empuja 'this' y luego los argumentos (convención simple)
+        - call FUNC_<method_name>
+        - limpia la pila y hace pop del valor de retorno
+        """
+        # push this
+        self.emit_quad('push', this_temp, None, None)
+        # push args en orden reverso
+        for arg in reversed(arguments or []):
+            self.emit_quad('push', arg, None, None)
+
+        func_label = f"FUNC_{method_name}"
+        self.emit_quad('call', None, None, func_label)
+
+        total = ((len(arguments) or 0) + 1) * 4  # this + args
+        self.emit_quad('add', 'SP', str(total), 'SP')
+
+        result_temp = self.new_temp()
+        self.emit_quad('pop', None, None, result_temp)
         self.current_temp = result_temp
         return result_temp
