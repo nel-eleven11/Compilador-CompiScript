@@ -90,6 +90,18 @@ def _serialize_symbol_table(symtab):
         })
     return data
 
+#  Serializar los cuádruplos a una lista de dicts 
+def _serialize_quadruples(quad_list):
+    out = []
+    for q in quad_list:
+        out.append({
+            "op": getattr(q, "op", None),
+            "arg1": getattr(q, "arg1", None),
+            "arg2": getattr(q, "arg2", None),
+            "result": getattr(q, "result", None),
+        })
+    return out
+
 def _run_common(input_stream, ast_path="ast.json"):
     # lexer
     lexer = CompiscriptLexer(input_stream)
@@ -114,6 +126,14 @@ def _run_common(input_stream, ast_path="ast.json"):
     analyzer = SemanticVisitor()
     analyzer.visit(tree)
 
+    #Código intermedio
+    print("\n")
+    analyzer.codegen.print_quadruples()
+    print("\n")
+    analyzer.codegen.print_memory_map()
+
+    quadruples_json = _serialize_quadruples(analyzer.codegen.get_quadruples())
+
     # resultados
     errors = list(getattr(analyzer, "errors", []))
     if not errors:
@@ -121,7 +141,7 @@ def _run_common(input_stream, ast_path="ast.json"):
     
     symbols_json = _serialize_symbol_table(analyzer.symbol_table)
 
-    return {"ast": ast_json, "errors": errors, "symbols": symbols_json}
+    return {"ast": ast_json, "errors": errors, "symbols": symbols_json, "quadruples": quadruples_json,}
 
 
 def run_from_text(source_code: str, ast_path="ast.json"):
