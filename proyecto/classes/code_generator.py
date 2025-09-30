@@ -170,6 +170,51 @@ class CodeGenerator:
         temp = self.new_temp()
         self.emit_quad('@', address, None, temp)  # @ indica carga desde memoria
         return temp
+
+        def generate_address_of_variable(self, var_name, ctx=None):
+        """
+        Devuelve en un temporal la *dirección base* de una variable sin des-referenciarla.
+        Útil para arreglos (arr) y para cualquier dato que se trate como puntero/base.
+        """
+        addr = self.get_variable_address(var_name)
+        # addr puede venir como int (0xNNNN) o como string tipo "FP[...]" / "0x...."
+        if isinstance(addr, int):
+            addr_str = f"0x{addr:04X}"
+        else:
+            addr_str = addr
+        tmp = self.new_temp()
+        self.emit_quad('=', addr_str, None, tmp)
+        self.current_temp = tmp
+        return tmp
+
+    def generate_indexed_load(self, base_addr_temp, index_temp, elem_size=4, ctx=None):
+        """
+        Carga genérica: result = *(base + index*elem_size)
+        Sirve para arr[i] donde base_addr_temp es la dirección base (o puntero) del arreglo.
+        """
+        # offset = index * elem_size
+        offset = self.new_temp()
+        self.emit_quad('*', index_temp, str(elem_size), offset)
+        # eff = base + offset
+        eff = self.new_temp()
+        self.emit_quad('+', base_addr_temp, offset, eff)
+        # result = [eff]
+        result = self.new_temp()
+        self.emit_quad('[]', eff, None, result)
+        self.current_temp = result
+        return result
+
+    def generate_indexed_store(self, base_addr_temp, index_temp, value_temp, elem_size=4, ctx=None):
+        """
+        Asignación genérica: *(base + index*elem_size) = value
+        """
+        offset = self.new_temp()
+        self.emit_quad('*', index_temp, str(elem_size), offset)
+        eff = self.new_temp()
+        self.emit_quad('+', base_addr_temp, offset, eff)
+        self.emit_quad('[]=', value_temp, None, eff)
+        return eff
+
         
     def generate_variable_reference(self, var_name, ctx=None):
         """Genera código para referencias a variables"""
@@ -367,49 +412,33 @@ class CodeGenerator:
 
     def generate_array_access(self, array_name, index_temp, ctx=None):
         """
-        Genera código para acceso a elementos de array
+        Genera código para acceso a elementos de array, Acceso a arreglo por nombre de variable.
         Patrón: t = array[index]
         """
-        array_address = self.get_variable_address(array_name)
-        result_temp = self.new_temp()
+        # Dirección base en un temporal
+        base_tmp = self.generate_address_of_variable(array_name, ctx)
 
-        # Obtener tamaño del elemento
+        # Tamaño de elemento según el tipo del símbolo
         symbol = self.symbol_table.lookup(array_name)
-        element_size = 4  # Default
+        elem_size = 4
         if symbol and hasattr(symbol.type, 'element_type'):
-            element_size = self.get_type_size(symbol.type.element_type)
+            elem_size = self.get_type_size(symbol.type.element_type)
 
-        # Calcular dirección: base + index * size
-        offset_temp = self.new_temp()
-        self.emit_quad('*', index_temp, str(element_size), offset_temp)  # index * element_size
-
-        address_temp = self.new_temp()
-        self.emit_quad('+', array_address, offset_temp, address_temp)  # base + offset
-
-        # Carga indirecta
-        self.emit_quad('[]', address_temp, None, result_temp)  # result = [address]
-
-        self.current_temp = result_temp
-        return result_temp
+        return self.generate_indexed_load(base_tmp, index_temp, elem_size, ctx)
 
     def generate_array_assignment(self, array_name, index_temp, value_temp, ctx=None):
         """
         Genera código para asignación a elementos de array
         Patrón: array[index] = value
         """
-        array_address = self.get_variable_address(array_name)
+        base_tmp = self.generate_address_of_variable(array_name, ctx)
 
-        # Calcular dirección: base + index * size
-        offset_temp = self.new_temp()
-        self.emit_quad('*', index_temp, '4', offset_temp)  # index * 4
+        symbol = self.symbol_table.lookup(array_name)
+        elem_size = 4
+        if symbol and hasattr(symbol.type, 'element_type'):
+            elem_size = self.get_type_size(symbol.type.element_type)
 
-        address_temp = self.new_temp()
-        self.emit_quad('+', array_address, offset_temp, address_temp)  # base + offset
-
-        # Asignación indirecta
-        self.emit_quad('[]=', value_temp, None, address_temp)  # [address] = value
-
-        return address_temp
+        return self.generate_indexed_store(base_tmp, index_temp, value_temp, elem_size, ctx)
 
     def generate_matrix_access(self, matrix_name, row_index_temp, col_index_temp, cols_count, ctx=None):
         """
