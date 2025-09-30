@@ -171,7 +171,7 @@ class CodeGenerator:
         self.emit_quad('@', address, None, temp)  # @ indica carga desde memoria
         return temp
 
-        def generate_address_of_variable(self, var_name, ctx=None):
+    def generate_address_of_variable(self, var_name, ctx=None):
         """
         Devuelve en un temporal la *dirección base* de una variable sin des-referenciarla.
         Útil para arreglos (arr) y para cualquier dato que se trate como puntero/base.

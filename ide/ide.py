@@ -5,6 +5,9 @@ import sys
 import subprocess
 from pathlib import Path
 from contextlib import redirect_stdout
+import importlib
+from importlib.util import spec_from_file_location, module_from_spec
+
 
 import streamlit as st
 
@@ -17,14 +20,41 @@ AST_PATH = PROY_DIR / "ast.json"
 LOG_PATH = PROY_DIR / "log.txt"
 GRAMMAR = PROY_DIR / "Compiscript.g4"
 
-# PYTHONPATH para 'proyecto'
-if str(PROY_DIR) not in sys.path:
-    sys.path.insert(0, str(PROY_DIR))
+def _load_cps_main():
+    """
+    Intenta cargar el front-end del compilador.
+    1) Primero como módulo 'main' en PROY_DIR (vía PYTHONPATH).
+    2) Si falla, carga por ruta explícita proyecto/main.py
+    3) Siempre permite recarga si ya estaba importado.
+    """
+    # Asegurar PROY_DIR en sys.path
+    if str(PROY_DIR) not in sys.path:
+        sys.path.insert(0, str(PROY_DIR))
 
-try:
-    import main as cps_main  # proyecto/main.py
-except Exception:
-    cps_main = None
+    # 1) Import convencional (y recarga si ya estaba)
+    try:
+        if 'main' in sys.modules:
+            return importlib.reload(sys.modules['main'])
+        return importlib.import_module('main')  # proyecto/main.py
+    except Exception:
+        pass
+
+    # 2) Carga por ruta explícita (fallback)
+    for fname in ("main.py"):
+        fpath = PROY_DIR / fname
+        if fpath.exists():
+            try:
+                spec = spec_from_file_location("cps_main", str(fpath))
+                mod = module_from_spec(spec)
+                spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+                return mod
+            except Exception:
+                continue
+    return None
+
+# Carga inicial 
+cps_main = _load_cps_main()
+
 
 # ---------- Estado ----------
 if "vista" not in st.session_state:
@@ -82,6 +112,9 @@ def _sync_editor_to_state():
 
 # -------- Compilar --------
 def compile_current_code() -> None:
+    global cps_main
+    cps_main = _load_cps_main()
+
     if cps_main is None:
         st.session_state.output_text = "Error: no pude importar proyecto/main.py"
         st.session_state.locked = False
