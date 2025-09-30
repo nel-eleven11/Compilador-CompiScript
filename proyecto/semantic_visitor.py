@@ -329,7 +329,7 @@ class SemanticVisitor(CompiscriptVisitor):
             # Generación de código
             if result_type != ERROR_TYPE:
                 op_text = '||' if isinstance(ctx, CompiscriptParser.LogicalOrExprContext) else '&&'
-                result_temp = self.codegen.generate_arithmetic_operation(left_temp, right_temp, op_text, ctx)
+                result_temp = self.codegen.generate_logical_operation(left_temp, right_temp, '||', ctx)
                 left_temp = result_temp
                 self.codegen.current_temp = result_temp
             
@@ -356,7 +356,7 @@ class SemanticVisitor(CompiscriptVisitor):
             
             # Generación de código
             if result_type != ERROR_TYPE:
-                result_temp = self.codegen.generate_arithmetic_operation(left_temp, right_temp, '&&', ctx)
+                result_temp = self.codegen.generate_logical_operation(left_temp, right_temp, '&&', ctx)
                 left_temp = result_temp
                 self.codegen.current_temp = result_temp
             
@@ -389,7 +389,7 @@ class SemanticVisitor(CompiscriptVisitor):
             # Generación de código
             if result_type != ERROR_TYPE:
                 op_text = op_node.getText()  # '==' o '!='
-                result_temp = self.codegen.generate_arithmetic_operation(left_temp, right_temp, op_text, ctx)
+                result_temp = self.codegen.generate_comparison(left_temp, right_temp, op_text, ctx)
                 left_temp = result_temp
                 self.codegen.current_temp = result_temp
             
@@ -421,7 +421,7 @@ class SemanticVisitor(CompiscriptVisitor):
             # Generación de código
             if result_type != ERROR_TYPE:
                 op_text = op_node.getText()  # '<', '<=', '>', '>='
-                result_temp = self.codegen.generate_arithmetic_operation(left_temp, right_temp, op_text, ctx)
+                result_temp = self.codegen.generate_comparison(left_temp, right_temp, op_text, ctx)
                 left_temp = result_temp
                 self.codegen.current_temp = result_temp
             
@@ -629,16 +629,21 @@ class SemanticVisitor(CompiscriptVisitor):
     
     def visitAssignment(self, ctx):
 
-        # Caso b) property assign: hay DOS expresiones en el contexto
-        if len(ctx.expression()) == 2:
+        # Caso b) property assign: hay DOS expresiones en el contexto,  baseExpr . Identifier = valueExpr
+        if len(ctx.expression()) == 2 and ctx.Identifier():
             base_expr = ctx.expression(0)
             value_expr = ctx.expression(1)
             member_name = ctx.Identifier().getText()
 
+            # Visitar base primero y guardar su temporal (this/base)
             base_type = self.visit(base_expr)
-            value_type = self.visit(value_expr)
+            base_temp = self.codegen.current_temp
 
-            if base_type == ERROR_TYPE:
+            # Luego visitar el valor a asignar
+            value_type = self.visit(value_expr)
+            value_temp = self.codegen.current_temp
+
+            if base_type == ERROR_TYPE or value_type == ERROR_TYPE:
                 return ERROR_TYPE
 
             # Debe ser instancia de clase
@@ -661,19 +666,14 @@ class SemanticVisitor(CompiscriptVisitor):
                 self.add_error(ctx, f"No se puede asignar {value_type.name} a {attr.type.name}")
                 return ERROR_TYPE
 
-            # GENERACIÓN DE CÓDIGO
+            # GENERACIÓN DE CÓDIGO: store en atributo (base + offset) = value
             if not self.errors:
-                base_temp = self.codegen.current_temp  # Temporal de la expresión base
-                value_temp = self.visit(value_expr)    # Temporal del valor a asignar
-                
-                # Para propiedades de objetos, necesitamos calcular la dirección
-                # OJO
-                # OJO ACA esto puede que sea necesario modificarlo para el caso de los objetos.......................
-                # Esto es un placeholder seguramnte haya que implementar la lógica específica
-                prop_address = f"{base_temp}.{member_name}"
-                self.codegen.generate_assignment(prop_address, value_temp, ctx)
+                self.codegen.generate_property_store(
+                    base_temp, cls_sym.name, member_name, value_temp, ctx
+                )
 
-            return value_type if value_type else ERROR_TYPE
+            return value_type
+
 
         # Caso a) asignación simple a variable
         # Obtener el nombre de la variable
@@ -1330,9 +1330,14 @@ class SemanticVisitor(CompiscriptVisitor):
             sym = self.symbol_table.lookup(name)
             if isinstance(sym, VariableSymbol):
                 current_type = sym.type
-                # GENERACIÓN DE CÓDIGO - Cargar variable
-                temp = self.codegen.generate_load_variable(name, base)
-                self.codegen.current_temp = temp
+                # === CAMBIO CLAVE ===
+                # Si es arreglo, NO desreferenciamos; necesitamos la dirección base.
+                if isinstance(current_type, ArrayType):
+                    addr_tmp = self.codegen.generate_address_of_variable(name, base)
+                    self.codegen.current_temp = addr_tmp
+                else:
+                    tmp = self.codegen.generate_load_variable(name, base)
+                    self.codegen.current_temp = tmp
             elif isinstance(sym, FunctionSymbol):
                 pending_func = sym
             elif isinstance(sym, ClassSymbol):
@@ -1434,12 +1439,21 @@ class SemanticVisitor(CompiscriptVisitor):
                 if not isinstance(current_type, ArrayType):
                     self.add_error(s, "Indexación sobre expresión que no es un arreglo")
                     current_type = ERROR_TYPE
+                    pending_func = None
                 else:
+                    # Guardar base antes de visitar el índice (la visita cambia current_temp)
+                    base_addr_tmp = self.codegen.current_temp
                     idx_t = self.visit(s.expression())
+                    idx_tmp = self.codegen.current_temp
                     if idx_t != ERROR_TYPE and idx_t != INT_TYPE:
                         self.add_error(s.expression(), f"El índice de un arreglo debe ser integer, encontrado {idx_t.name}")
+                    else:
+                        # Generar acceso: result = *(base + idx*elem_size)
+                        elem_size = self.codegen.get_type_size(current_type.element_type)
+                        self.codegen.generate_indexed_load(base_addr_tmp, idx_tmp, elem_size, s)
                     current_type = current_type.element_type
                 pending_func = None
+
 
             # Acceso a propiedad: .ident  (atributo o método, con herencia)
             elif isinstance(s, CompiscriptParser.PropertyAccessExprContext):
