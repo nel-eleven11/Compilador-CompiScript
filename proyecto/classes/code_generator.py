@@ -545,6 +545,60 @@ class CodeGenerator:
 
         return {'func_label': func_label, 'ar_design': ar_design}
 
+    def generate_method_declaration(self, class_name, method_name, parameters, return_type, body_func, ctx=None):
+        """
+        Genera código para declaración de MÉTODO de clase.
+            - Crea AR con clave única 'Clase::método'
+            - Inserta parámetro oculto '__this' como puntero a la instancia
+            - Emite label 'FUNC_<método> (Clase)'
+        """
+        func_key = self._method_key(class_name, method_name)
+
+        # Crear AR (clave única por clase::método)
+        ar_design = self.create_ar_design(func_key)
+
+        # 'this' (puntero a la instancia) como primer parámetro oculto
+        ar_design.add_parameter('__this', None)
+
+        # Parámetros declarados por el usuario
+        for param_name, param_type in parameters or []:
+            ar_design.add_parameter(param_name, param_type)
+
+        # Etiqueta de inicio del método
+        func_label = self._method_label(class_name, method_name)
+        self.emit_quad('label', None, None, func_label)
+
+        # Prólogo
+        self.emit_quad('enter', str(ar_design.size), None, None)
+
+        # Guardar contexto de función (usar clave única para evitar colisiones)
+        old_function_context = getattr(self, 'function_context', None)
+        self.function_context = {
+            'name': func_key,
+            'ar_design': ar_design,
+            'return_type': return_type,
+            'func_label': func_label,
+            'class_name': class_name,
+            'method_name': method_name
+        }
+
+        # Cuerpo
+        if body_func:
+            body_func()
+
+        # Si es void y no hubo return explícito, emitir return vacío
+        if return_type and getattr(return_type, 'name', None) == 'void':
+            self.emit_quad('return', None, None, None)
+
+        # Epílogo
+        self.emit_quad('leave', None, None, None)
+
+        # Restaurar contexto
+        self.function_context = old_function_context
+
+        return {'func_label': func_label, 'ar_design': ar_design}
+
+
     def generate_function_call(self, function_name, arguments, ctx=None):
         """
         Genera código para llamadas a funciones
@@ -827,17 +881,26 @@ class CodeGenerator:
     def generate_method_call(self, this_temp, class_name, method_name, arguments, ctx=None):
         """
         Llamada a método de instancia:
-        - Empuja 'this' y luego los argumentos (convención simple)
-        - call FUNC_<method_name>
-        - limpia la pila y hace pop del valor de retorno
+        - Empuja '__this' y luego los argumentos
+        - call FUNC_<method_name> (ClassName)
+        - Limpia la pila y hace pop del valor de retorno
         """
+        func_key = self._method_key(class_name, method_name)
+
+        # Asegurar AR (si no existe aún)
+        ar_design = self.get_ar_design(func_key)
+        if not ar_design:
+            ar_design = self.create_ar_design(func_key)
+            # Importante: reflejar que existe '__this' como primer parámetro
+            ar_design.add_parameter('__this', None)
+
         # push this
         self.emit_quad('push', this_temp, None, None)
         # push args en orden reverso
         for arg in reversed(arguments or []):
             self.emit_quad('push', arg, None, None)
 
-        func_label = f"FUNC_{method_name}"
+        func_label = self._method_label(class_name, method_name)
         self.emit_quad('call', None, None, func_label)
 
         total = ((len(arguments) or 0) + 1) * 4  # this + args
@@ -847,3 +910,12 @@ class CodeGenerator:
         self.emit_quad('pop', None, None, result_temp)
         self.current_temp = result_temp
         return result_temp
+
+    def _method_key(self, class_name: str, method_name: str) -> str:
+        """Clave única para AR/allocs de un método de clase."""
+        return f"{class_name}::{method_name}"
+
+    def _method_label(self, class_name: str, method_name: str) -> str:
+        """Etiqueta visible en TAC para un método de clase."""
+        return f"FUNC_{method_name} ({class_name})"
+

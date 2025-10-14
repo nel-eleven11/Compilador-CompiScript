@@ -1192,7 +1192,11 @@ class SemanticVisitor(CompiscriptVisitor):
         if not self.current_class:
             self.add_error(ctx, "Uso de 'this' fuera de una clase")
             return ERROR_TYPE
+        # Cargar el parámetro oculto '__this' desde el AR del método actual
+        tmp = self.codegen.generate_parameter_access('__this', ctx)
+        self.codegen.current_temp = tmp
         return self._class_type(self.current_class.name)
+
 
     def visitClassDeclaration(self, ctx: CompiscriptParser.ClassDeclarationContext):
         class_name = ctx.Identifier(0).getText()
@@ -1212,14 +1216,14 @@ class SemanticVisitor(CompiscriptVisitor):
 
         cls_sym = ClassSymbol(class_name, scope_id=self.symbol_table.scopes[-1].scope_id, parent_class=parent_cls)
 
-        # Registrar clase en el ámbito actual (global usualmente)
+        # Registrar clase
         try:
             self.symbol_table.add_symbol(cls_sym)
         except Exception as e:
             self.add_error(ctx, str(e))
             return None
 
-        # Entrar en ámbito de clase
+        # Entrar ámbito de clase
         self.symbol_table.enter_scope("class")
         prev_cls = self.current_class
         self.current_class = cls_sym
@@ -1227,28 +1231,29 @@ class SemanticVisitor(CompiscriptVisitor):
         # Procesar miembros
         for member in ctx.classMember():
             if member.functionDeclaration():
-                # Reutilizamos visitFunctionDeclaration pero añadimos a methods
                 func_ctx = member.functionDeclaration()
                 func_name = func_ctx.Identifier().getText()
 
-                # Constructor: nombre especial 'constructor'
+                # === CONSTRUCTOR ===
                 if func_name == "constructor":
-                    # El constructor no debe declarar tipo de retorno
+                    # Prohibir tipo de retorno explícito en constructor
                     if func_ctx.type_():
                         self.add_error(func_ctx, "El constructor no debe declarar tipo de retorno")
-                    # Crear símbolo con retorno VOID explícito
+
+                    # Crear símbolo del constructor
                     current_scope_id = self.symbol_table.scopes[-1].scope_id
                     func_symbol = FunctionSymbol("constructor", VOID_TYPE, current_scope_id)
-                    # Guardar antes de entrar al cuerpo para permitir recursión indirecta si aplica
                     cls_sym.add_method(func_symbol)
                     try:
                         self.symbol_table.add_symbol(func_symbol)
                     except Exception as e:
                         self.add_error(func_ctx, str(e))
 
-                    # Entrar a ámbito de función y parámetros
+                    # Ámbito de función
                     self.symbol_table.enter_scope("function")
                     self.current_function = func_symbol
+
+                    # Parámetros del constructor
                     if func_ctx.parameters():
                         for p in func_ctx.parameters().parameter():
                             p_name = p.Identifier().getText()
@@ -1260,8 +1265,29 @@ class SemanticVisitor(CompiscriptVisitor):
                             except Exception as e:
                                 self.add_error(p, str(e))
 
-                    # Procesar cuerpo
-                    self.visit(func_ctx.block())
+                    # ---- GENERACIÓN DE CÓDIGO (label del constructor incluido) ----
+                    if not self.errors:
+                        params_for_codegen = []
+                        if func_ctx.parameters():
+                            for p in func_ctx.parameters().parameter():
+                                pn = p.Identifier().getText()
+                                pt = self.get_type_from_ctx(p.type_() if p.type_() else None)
+                                params_for_codegen.append((pn, pt or VOID_TYPE))
+
+                        def body_func():
+                            self.visit(func_ctx.block())
+
+                        self.codegen.generate_method_declaration(
+                            class_name=cls_sym.name,
+                            method_name="constructor",
+                            parameters=params_for_codegen,
+                            return_type=VOID_TYPE,
+                            body_func=body_func,
+                            ctx=func_ctx
+                        )
+                    else:
+                        # Aun así visitar semánticamente
+                        self.visit(func_ctx.block())
 
                     # Validación: los constructores no retornan valor
                     for ret_t in func_symbol.return_statements:
@@ -1271,21 +1297,78 @@ class SemanticVisitor(CompiscriptVisitor):
                     self.symbol_table.exit_scope()
                     self.current_function = None
 
+                # === MÉTODO NORMAL ===
                 else:
-                    # Método normal: delegar a visitFunctionDeclaration y luego adjuntarlo a la clase
-                    before_funcs = len(self.symbol_table.scopes[-1].symbols)
-                    self.visit(func_ctx)
-                    # Recuperar el último FunctionSymbol agregado en este scope
-                    # (forma simple: buscar por nombre)
-                    added = self.symbol_table.lookup(func_name, current_scope_only=True)
-                    if isinstance(added, FunctionSymbol):
-                        cls_sym.add_method(added)
+                    return_type = self.get_type_from_ctx(func_ctx.type_()) if func_ctx.type_() else VOID_TYPE
+                    if return_type == VOID_TYPE and func_ctx.type_():
+                        self.add_error(func_ctx, "Uso explícito de 'void' no permitido en funciones")
+                        continue
+
+                    current_scope_id = self.symbol_table.scopes[-1].scope_id
+                    func_symbol = FunctionSymbol(func_name, return_type, current_scope_id)
+                    cls_sym.add_method(func_symbol)
+                    try:
+                        self.symbol_table.add_symbol(func_symbol)
+                    except Exception as e:
+                        self.add_error(func_ctx, str(e))
+                        continue
+
+                    self.symbol_table.enter_scope("function")
+                    self.current_function = func_symbol
+
+                    # Parámetros
+                    if func_ctx.parameters():
+                        for p in func_ctx.parameters().parameter():
+                            pn = p.Identifier().getText()
+                            pt = self.get_type_from_ctx(p.type_() if p.type_() else None)
+                            p_sym = VariableSymbol(pn, pt or VOID_TYPE, scope_id=self.symbol_table.scopes[-1].scope_id, is_const=False)
+                            func_symbol.add_parameter(p_sym)
+                            try:
+                                self.symbol_table.add_symbol(p_sym)
+                            except Exception as e:
+                                self.add_error(p, str(e))
+
+                    # ---- GENERACIÓN DE CÓDIGO (label 'FUNC_<método> (Clase)') ----
+                    if not self.errors:
+                        params_for_codegen = []
+                        if func_ctx.parameters():
+                            for p in func_ctx.parameters().parameter():
+                                pn = p.Identifier().getText()
+                                pt = self.get_type_from_ctx(p.type_() if p.type_() else None)
+                                params_for_codegen.append((pn, pt or VOID_TYPE))
+
+                        def body_func():
+                            self.visit(func_ctx.block())
+
+                        self.codegen.generate_method_declaration(
+                            class_name=cls_sym.name,
+                            method_name=func_name,
+                            parameters=params_for_codegen,
+                            return_type=return_type,
+                            body_func=body_func,
+                            ctx=func_ctx
+                        )
+                    else:
+                        self.visit(func_ctx.block())
+
+                    # Validación de returns
+                    if return_type != VOID_TYPE:
+                        if not func_symbol.return_statements:
+                            self.add_error(func_ctx, f"Función '{func_name}' debe retornar un valor")
+                        else:
+                            for ret_type in func_symbol.return_statements:
+                                if ret_type != ERROR_TYPE and ret_type != return_type:
+                                    self.add_error(func_ctx, f"Tipo de retorno inconsistente en método '{func_name}'. Esperado: {return_type.name}, encontrado: {ret_type.name}")
+                    else:
+                        for ret_type in func_symbol.return_statements:
+                            if ret_type != VOID_TYPE and ret_type != ERROR_TYPE:
+                                self.add_error(func_ctx, f"Método void '{func_name}' no debe retornar valor")
+
+                    self.symbol_table.exit_scope()
+                    self.current_function = None
 
             elif member.variableDeclaration():
-                # Atributos: reutilizamos visitVariableDeclaration y lo adjuntamos
-                before = len(self.symbol_table.scopes[-1].symbols)
                 self.visit(member.variableDeclaration())
-                # Adjuntar el último símbolo agregado por nombre
                 var_name = member.variableDeclaration().Identifier().getText()
                 sym = self.symbol_table.lookup(var_name, current_scope_only=True)
                 if isinstance(sym, VariableSymbol):
@@ -1297,18 +1380,18 @@ class SemanticVisitor(CompiscriptVisitor):
                 sym = self.symbol_table.lookup(const_name, current_scope_only=True)
                 if isinstance(sym, VariableSymbol):
                     cls_sym.add_attribute(sym)
-        
-        # Construir/registrar layout de clase para TAC
+
+        # Construir layout de clase para TAC
         try:
             self.codegen.define_class_layout(cls_sym)
         except Exception:
-            # Fallback silencioso para no romper en caso de tipos incompletos
             pass
 
         # Salir de la clase
         self.symbol_table.exit_scope()
         self.current_class = prev_cls
         return None
+
 
     # =========================================================================================================
     # REGLAS DE LISTAS Y ESTRUCTURAS DE DATOS
