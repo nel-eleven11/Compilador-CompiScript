@@ -1,3 +1,5 @@
-let x:integer = 5;
-let y:boolean = true;
-let z:integer = x + 10;
+// test_minimal.cps
+let a: integer = 5;
+let b: integer = 3;
+let c: integer = a + b;
+c = c * 2;

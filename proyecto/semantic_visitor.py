@@ -154,6 +154,7 @@ class SemanticVisitor(CompiscriptVisitor):
 
     # Visitor para additiveExpr (+ -)
     def visitAdditiveExpr(self, ctx):
+
         children = list(ctx.getChildren())
         if len(children) == 1:
             return self.visit(ctx.multiplicativeExpr(0))
@@ -189,6 +190,7 @@ class SemanticVisitor(CompiscriptVisitor):
         return left_type
     
     def visitMultiplicativeExpr(self, ctx):
+
         children = list(ctx.getChildren())
         if len(children) == 1:
             return self.visit(ctx.unaryExpr(0))
@@ -441,7 +443,8 @@ class SemanticVisitor(CompiscriptVisitor):
             if expr_type != ERROR_TYPE:
                 # caso para operacion de negacion booleana
                 operand_temp = self.codegen.current_temp
-                self.codegen.generate_unary_operation(operand_temp, '!', ctx)
+                
+                self.codegen.generate_logical_not(operand_temp, ctx)
             
             return BOOL_TYPE
         elif ctx.MINUS():
@@ -462,7 +465,9 @@ class SemanticVisitor(CompiscriptVisitor):
     # ===============================================================================================
     # REGLAS DE DECLARACIONES DE CONSTANTES Y VARIABLES
     #
-    #    
+    #  
+     
+    
     def visitConstantDeclaration(self, ctx):
         const_name = ctx.Identifier().getText()
 
@@ -481,7 +486,9 @@ class SemanticVisitor(CompiscriptVisitor):
             return
             
         # tipo del valor inicializador
+        self.codegen.in_assignment_context = True
         initializer_type = self.visit(ctx.expression())
+        self.codegen.in_assignment_context = False
         
         # si notiene tipo declarado, inferirlo del inicializador
         if not declared_type:
@@ -512,10 +519,12 @@ class SemanticVisitor(CompiscriptVisitor):
         
         # GENERACIÓN DE CÓDIGO
         if not self.errors:
-            init_temp = self.codegen.current_temp  # Temporal ya generado
+            init_value = self.codegen.current_temp
             const_address = self.codegen.get_variable_address(const_name)
-            self.codegen.generate_assignment(const_address, init_temp, ctx)
-            
+            self.codegen.generate_assignment(const_address, init_value, ctx)
+        
+        self.codegen.end_expression()
+        
         return None
     
     def visitLiteralExpr(self, ctx):
@@ -577,7 +586,13 @@ class SemanticVisitor(CompiscriptVisitor):
             return
         
         declared_type = self.get_type_from_ctx(ctx.typeAnnotation().type_()) if ctx.typeAnnotation() else None
-        initializer_type = self.visit(ctx.initializer().expression()) if ctx.initializer() else None
+        
+        # unica VISITA con contexto de asignación
+        initializer_type = None
+        if ctx.initializer():
+            self.codegen.in_assignment_context = True
+            initializer_type = self.visit(ctx.initializer().expression())
+            self.codegen.in_assignment_context = False
         
         # Determinar tipo y si fue inferido
         if declared_type:
@@ -607,15 +622,17 @@ class SemanticVisitor(CompiscriptVisitor):
         except Exception as e:
             self.add_error(ctx, str(e))
 
-        # GENERACIÓN DE CÓDIGO
+        # GENERACIÓN DE CÓDIGO (ya visitamos arriba)
         if not self.errors and ctx.initializer():
-            init_temp = self.codegen.current_temp  # Temporal ya generado en la visita
+            init_value = self.codegen.current_temp  # Puede ser literal o temporal
             var_address = self.codegen.get_variable_address(var_name)
-            self.codegen.generate_assignment(var_address, init_temp, ctx)
+            self.codegen.generate_assignment(var_address, init_value, ctx)
         
         # Si se está dentro de una clase, registrar como atributo
         if self.current_class:
             self.current_class.add_attribute(symbol)
+
+        self.codegen.end_expression()
 
         return None
 
@@ -696,7 +713,9 @@ class SemanticVisitor(CompiscriptVisitor):
 
         # Obtener tipo de la expresión
         expr_ctx = ctx.expression()[0] if isinstance(ctx.expression(), list) else ctx.expression()
-        expr_type = self.visit(expr_ctx) if expr_ctx else None
+        self.codegen.in_assignment_context = True
+        expr_type = self.visit(expr_ctx)
+        self.codegen.in_assignment_context = False
 
         # Caso especial: variable con tipo inferido inicializado con null
         if (symbol.type == NULL_TYPE and 
@@ -713,14 +732,11 @@ class SemanticVisitor(CompiscriptVisitor):
 
         # GENERACIÓN DE CÓDIGO, para asignación simple
         if not self.errors:
-            # Obtener el valor de la expresión
-            expr_temp = self.codegen.current_temp
-            
-            # Obtener la dirección de la variable
+            expr_value = self.codegen.current_temp  # literal o temporal
             var_address = self.codegen.get_variable_address(var_name)
-            
-            # Generar asignación
-            self.codegen.generate_assignment(var_address, expr_temp, ctx)
+            self.codegen.generate_assignment(var_address, expr_value, ctx)
+
+        self.codegen.end_expression()
 
         return expr_type if expr_type else ERROR_TYPE
 
@@ -760,6 +776,7 @@ class SemanticVisitor(CompiscriptVisitor):
             
         # GENERACIÓN DE CÓDIGO
         if symbol.category == 'variable':
+            # USAR generate_load_variable optimizado
             temp = self.codegen.generate_load_variable(name, ctx)
             self.codegen.current_temp = temp
         
@@ -767,6 +784,10 @@ class SemanticVisitor(CompiscriptVisitor):
         
     def visitFunctionDeclaration(self, ctx):
         func_name = ctx.Identifier().getText()
+
+        # identificar el inicio de la nueva funcion
+        self.codegen.set_current_function(func_name)
+
         return_type = self.get_type_from_ctx(ctx.type_()) if ctx.type_() else VOID_TYPE
         
         if return_type == VOID_TYPE and ctx.type_():

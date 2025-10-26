@@ -7,13 +7,89 @@ class CodeGenerator:
     def __init__(self, symbol_table):
         self.quadruples = []
         self.symbol_table = symbol_table
-        self.temp_counter = 0
+        self.temp_counters = {}
+        self.current_function = "global"
         self.label_counter = 0
-        self.ar_designs = {}  # function_name que usa -> ActivationRecordDesign
+        self.ar_designs = {}
         self.current_ar = None
         self.current_temp = None
         self.memory_manager = MemoryManager()
         self.class_layouts = {}
+
+        # Para optimización de temporales
+        self.last_assigned_temp = None
+        self.reusable_temps = set()
+        self.used_temps_in_expr = set()
+        self.in_assignment_context = False  # NUEVO
+
+    def set_current_function(self, function_name):
+        self.current_function = function_name
+        if function_name not in self.temp_counters:
+            self.temp_counters[function_name] = 0
+        self.reusable_temps.clear()
+        self.used_temps_in_expr.clear()
+        self.last_assigned_temp = None
+
+    def new_temp(self):
+        """Genera un nuevo temporal, reutilizando si es posible"""
+        if self.current_function not in self.temp_counters:
+            self.temp_counters[self.current_function] = 0
+        
+        if self.reusable_temps:
+            temp = self.reusable_temps.pop()
+        else:
+            temp = f"t{self.temp_counters[self.current_function]}"
+            self.temp_counters[self.current_function] += 1
+        
+        self.last_assigned_temp = temp
+        return temp
+
+    def mark_temp_used(self, temp):
+        """Marca un temporal como usado en la expresión actual"""
+        if temp and temp.startswith('t'):
+            self.used_temps_in_expr.add(temp)
+            if temp in self.reusable_temps:
+                self.reusable_temps.remove(temp)
+
+    def mark_temp_reusable(self, temp):
+        """Marca un temporal como reusable"""
+        if (temp and temp.startswith('t') and 
+            temp not in self.used_temps_in_expr):
+            self.reusable_temps.add(temp)
+
+    def end_expression(self):
+        """Llamar al final de una expresión para resetear estado"""
+        self.used_temps_in_expr.clear()
+        self.last_assigned_temp = None
+        self.in_assignment_context = False
+
+    def generate_arithmetic_operation(self, left_operand, right_operand, operator, ctx=None):
+        """OPTIMIZADO: Operaciones aritméticas con máxima reutilización"""
+        self.mark_temp_used(left_operand)
+        self.mark_temp_used(right_operand)
+        
+        # Estrategia: reutilizar left_operand si es posible
+        if (left_operand.startswith('t') and 
+            left_operand not in self.used_temps_in_expr and
+            left_operand != right_operand):
+            result_temp = left_operand
+        elif (right_operand.startswith('t') and 
+              right_operand not in self.used_temps_in_expr):
+            result_temp = right_operand
+        else:
+            result_temp = self.new_temp()
+        
+        self.emit_quad(operator, left_operand, right_operand, result_temp)
+        self.current_temp = result_temp
+        
+        # Liberar operandos si no se reutilizaron
+        if left_operand != result_temp and left_operand.startswith('t'):
+            self.mark_temp_reusable(left_operand)
+        if right_operand != result_temp and right_operand.startswith('t'):
+            self.mark_temp_reusable(right_operand)
+            
+        self.last_assigned_temp = result_temp
+        return result_temp
 
     def get_type_size(self, type_obj):
         """Calcula el tamaño de un tipo en bytes"""
@@ -33,12 +109,13 @@ class CodeGenerator:
             'null': 4,    # Puntero
         }
         return type_sizes.get(type_obj.name, 4)
-        
-    def new_temp(self):
-        """Genera un nuevo temporal"""
-        temp = f"t{self.temp_counter}"
-        self.temp_counter += 1
-        return temp
+
+    # version anterior, pero que era muy simple  
+    # def new_temp(self):
+    #     """Genera un nuevo temporal"""
+    #     temp = f"t{self.temp_counter}"
+    #     self.temp_counter += 1
+    #     return temp
         
     def new_label(self):
         """Genera una nueva etiqueta"""
@@ -138,37 +215,77 @@ class CodeGenerator:
         for i, quad in enumerate(self.quadruples):
             print(f"{i}: {quad}")
 
-    def generate_arithmetic_operation(self, left_operand, right_operand, operator, ctx=None):
-        """Genera código para operaciones aritméticas binarias"""
-        result_temp = self.new_temp()
-        self.emit_quad(operator, left_operand, right_operand, result_temp)
-        self.current_temp = result_temp
-        return result_temp
+    # version previa de generacion de operaciones aritmeticas
+    # def generate_arithmetic_operation(self, left_operand, right_operand, operator, ctx=None):
+    #     """Genera código para operaciones aritméticas binarias"""
+    #     result_temp = self.new_temp()
+    #     self.emit_quad(operator, left_operand, right_operand, result_temp)
+    #     self.current_temp = result_temp
+    #     return result_temp
         
     def generate_unary_operation(self, operand, operator, ctx=None):
-        """Genera código para operaciones unarias"""
-        result_temp = self.new_temp()
+        """
+        Genera código para operaciones unarias optimizadas
+        """
+        self.mark_temp_used(operand)
+        
+        # Intentar reutilizar temporal
+        if (self.last_assigned_temp and 
+            self.last_assigned_temp not in self.used_temps_in_expr):
+            result_temp = self.last_assigned_temp
+        else:
+            result_temp = self.new_temp()
+            
         self.emit_quad(operator, operand, None, result_temp)
         self.current_temp = result_temp
+        self.last_assigned_temp = result_temp
         return result_temp
         
     def generate_assignment(self, target, value, ctx=None):
-        """Genera código para asignaciones"""
-        self.emit_quad('=', value, None, target)
+        """
+        OPTIMIZADO: Asignación directa sin temporales intermedios cuando es posible
+        """
+        # Caso 1: Asignación directa de literal o valor simple
+        if not value.startswith('t'):
+            # value es un literal o dirección, asignar directamente
+            self.emit_quad('=', value, None, target)
+        else:
+            # value es un temporal, asignación normal
+            self.emit_quad('=', value, None, target)
+            # Marcar el temporal como reusable después de usarlo
+            self.mark_temp_reusable(value)
+        
         return target
         
     def generate_load_immediate(self, value, ctx=None):
-        """Genera código para cargar valores inmediatos (literales)"""
+        """
+        OPTIMIZADO: No genera temporal para literales en contexto de asignación
+        """
+        # Si estamos en contexto de asignación, retornar el valor directamente
+        if self.in_assignment_context:
+            self.current_temp = value
+            return value
+        
+        # En expresiones complejas, sí necesitamos temporal
         temp = self.new_temp()
         self.emit_quad('=', value, None, temp)
         self.current_temp = temp
         return temp
-    
+
     def generate_load_variable(self, var_name, ctx=None):
-        """Genera código para cargar una variable desde memoria"""
+        """OPTIMIZADO: Carga de variables con reutilización de temporales"""
         address = self.get_variable_address(var_name)
-        temp = self.new_temp()
-        self.emit_quad('@', address, None, temp)  # @ indica carga desde memoria
+        
+        # Intentar reutilizar temporal si es posible
+        if (self.last_assigned_temp and 
+            self.last_assigned_temp not in self.used_temps_in_expr):
+            temp = self.last_assigned_temp
+        else:
+            temp = self.new_temp()
+        
+        self.emit_quad('@', address, None, temp)
+        self.current_temp = temp
+        self.last_assigned_temp = temp
         return temp
 
     def generate_address_of_variable(self, var_name, ctx=None):
@@ -693,41 +810,63 @@ class CodeGenerator:
     # ========== COMPARISON AND LOGICAL OPERATIONS ==========
 
     def generate_comparison(self, left_temp, right_temp, operator, ctx=None):
-        """
-        Genera código para operaciones de comparación
-        Operadores: ==, !=, <, <=, >, >=
-        """
-        result_temp = self.new_temp()
+        """OPTIMIZADO: Comparaciones con reutilización"""
+        self.mark_temp_used(left_temp)
+        self.mark_temp_used(right_temp)
+        
+        # Para comparaciones, intentar reutilizar
+        if (self.last_assigned_temp and 
+            self.last_assigned_temp not in self.used_temps_in_expr):
+            result_temp = self.last_assigned_temp
+        elif (left_temp.startswith('t') and 
+              left_temp not in self.used_temps_in_expr):
+            result_temp = left_temp
+        else:
+            result_temp = self.new_temp()
+        
         self.emit_quad(operator, left_temp, right_temp, result_temp)
         self.current_temp = result_temp
+        self.last_assigned_temp = result_temp
+        
+        # Liberar operandos
+        if left_temp != result_temp and left_temp.startswith('t'):
+            self.mark_temp_reusable(left_temp)
+        if right_temp != result_temp and right_temp.startswith('t'):
+            self.mark_temp_reusable(right_temp)
+        
         return result_temp
 
     def generate_logical_operation(self, left_temp, right_temp, operator, ctx=None):
         """
-        Genera código para operaciones lógicas (&&, ||)
+        Genera código para operaciones lógicas (&&, ||) optimizadas
         Utiliza evaluación con cortocircuito
         """
+        # Marcar operandos como usados
+        self.mark_temp_used(left_temp)
+        self.mark_temp_used(right_temp)
+        
         if operator == '&&':
             return self._generate_and_operation(left_temp, right_temp, ctx)
         elif operator == '||':
             return self._generate_or_operation(left_temp, right_temp, ctx)
         else:
-            # Operación lógica simple
-            result_temp = self.new_temp()
+            # Operación lógica simple - optimizada
+            if (self.last_assigned_temp and 
+                self.last_assigned_temp not in self.used_temps_in_expr):
+                result_temp = self.last_assigned_temp
+            else:
+                result_temp = self.new_temp()
+                
             self.emit_quad(operator, left_temp, right_temp, result_temp)
             self.current_temp = result_temp
+            self.last_assigned_temp = result_temp
             return result_temp
 
     def _generate_and_operation(self, left_temp, right_temp, ctx=None):
         """
-        Genera código para AND con cortocircuito
-        Patrón:
-        if !left goto L1
-        result = right
-        goto L2
-        L1: result = false
-        L2: (continuar)
+        Genera código para AND con cortocircuito optimizado
         """
+        # Para operaciones complejas con cortocircuito, crear nuevo temporal
         result_temp = self.new_temp()
         label_false = self.new_label()
         label_end = self.new_label()
@@ -747,17 +886,12 @@ class CodeGenerator:
         self.emit_quad('label', None, None, label_end)
 
         self.current_temp = result_temp
+        self.last_assigned_temp = result_temp
         return result_temp
 
     def _generate_or_operation(self, left_temp, right_temp, ctx=None):
         """
-        Genera código para OR con cortocircuito
-        Patrón:
-        if left goto L1
-        result = right
-        goto L2
-        L1: result = true
-        L2: (continuar)
+        Genera código para OR con cortocircuito optimizado
         """
         result_temp = self.new_temp()
         label_true = self.new_label()
@@ -778,15 +912,25 @@ class CodeGenerator:
         self.emit_quad('label', None, None, label_end)
 
         self.current_temp = result_temp
+        self.last_assigned_temp = result_temp
         return result_temp
 
     def generate_logical_not(self, operand_temp, ctx=None):
         """
-        Genera código para NOT lógico
+        Genera código para NOT lógico optimizado
         """
-        result_temp = self.new_temp()
+        self.mark_temp_used(operand_temp)
+        
+        # Intentar reutilizar temporal
+        if (self.last_assigned_temp and 
+            self.last_assigned_temp not in self.used_temps_in_expr):
+            result_temp = self.last_assigned_temp
+        else:
+            result_temp = self.new_temp()
+            
         self.emit_quad('!', operand_temp, None, result_temp)
         self.current_temp = result_temp
+        self.last_assigned_temp = result_temp
         return result_temp
 
     #========= CLASSES AND OBJECTS ==========
