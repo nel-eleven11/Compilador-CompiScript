@@ -46,10 +46,14 @@ class CodeGenerator:
 
     def mark_temp_used(self, temp):
         """Marca un temporal como usado en la expresión actual"""
-        if temp and temp.startswith('t'):
+        if not temp:
+            return
+        
+        # fix: Validar que es realmente un temporal
+        if isinstance(temp, str) and temp.startswith('t'):
             self.used_temps_in_expr.add(temp)
-            if temp in self.reusable_temps:
-                self.reusable_temps.remove(temp)
+            # Remover de reusables si estaba ahí
+            self.reusable_temps.discard(temp) 
 
     def mark_temp_reusable(self, temp):
         """Marca un temporal como reusable"""
@@ -64,17 +68,18 @@ class CodeGenerator:
         self.in_assignment_context = False
 
     def generate_arithmetic_operation(self, left_operand, right_operand, operator, ctx=None):
-        """OPTIMIZADO: Operaciones aritméticas con máxima reutilización"""
         self.mark_temp_used(left_operand)
         self.mark_temp_used(right_operand)
         
-        # Estrategia: reutilizar left_operand si es posible
+        # Solo reutilizar si NO está activo en la expresión
+        result_temp = None
         if (left_operand.startswith('t') and 
             left_operand not in self.used_temps_in_expr and
-            left_operand != right_operand):
+            left_operand != right_operand):  # NUEVO: evitar conflicto
             result_temp = left_operand
         elif (right_operand.startswith('t') and 
-              right_operand not in self.used_temps_in_expr):
+            right_operand not in self.used_temps_in_expr and
+            right_operand != left_operand):  # NUEVO: evitar conflicto
             result_temp = right_operand
         else:
             result_temp = self.new_temp()
@@ -82,7 +87,7 @@ class CodeGenerator:
         self.emit_quad(operator, left_operand, right_operand, result_temp)
         self.current_temp = result_temp
         
-        # Liberar operandos si no se reutilizaron
+        # Solo liberar si NO se reutilizó
         if left_operand != result_temp and left_operand.startswith('t'):
             self.mark_temp_reusable(left_operand)
         if right_operand != result_temp and right_operand.startswith('t'):
@@ -123,9 +128,9 @@ class CodeGenerator:
         self.label_counter += 1
         return label
         
-    def emit_quad(self, op, arg1, arg2, result):
+    def emit_quad(self, op, arg1, arg2, result, comment=None):
         """Emite un cuádruplo a la lista"""
-        quad = Quadruple(op, arg1, arg2, result)
+        quad = Quadruple(op, arg1, arg2, result, comment)
         self.quadruples.append(quad)
         return quad
         
@@ -273,20 +278,16 @@ class CodeGenerator:
         return temp
 
     def generate_load_variable(self, var_name, ctx=None):
-        """OPTIMIZADO: Carga de variables con reutilización de temporales"""
         address = self.get_variable_address(var_name)
         
-        # Intentar reutilizar temporal si es posible
-        if (self.last_assigned_temp and 
-            self.last_assigned_temp not in self.used_temps_in_expr):
-            temp = self.last_assigned_temp
-        else:
-            temp = self.new_temp()
+        # fix: Siempre crear nuevo temporal para loads
+        # (evita conflictos cuando la variable se usa múltiples veces)
+        temp = self.new_temp()
         
         self.emit_quad('@', address, None, temp)
         self.current_temp = temp
         
-        # CRÍTICO: Marcar este temporal como usado
+        # Marcar como usado en la expresión actual
         self.mark_temp_used(temp)
         
         self.last_assigned_temp = temp
@@ -814,28 +815,20 @@ class CodeGenerator:
     # ========== COMPARISON AND LOGICAL OPERATIONS ==========
 
     def generate_comparison(self, left_temp, right_temp, operator, ctx=None):
-        """OPTIMIZADO: Comparaciones con reutilización"""
         self.mark_temp_used(left_temp)
         self.mark_temp_used(right_temp)
         
-        # Para comparaciones, intentar reutilizar
-        if (self.last_assigned_temp and 
-            self.last_assigned_temp not in self.used_temps_in_expr):
-            result_temp = self.last_assigned_temp
-        elif (left_temp.startswith('t') and 
-              left_temp not in self.used_temps_in_expr):
-            result_temp = left_temp
-        else:
-            result_temp = self.new_temp()
+        # fix: Comparaciones siempre necesitan nuevo temporal (resultado booleano)
+        result_temp = self.new_temp()
         
         self.emit_quad(operator, left_temp, right_temp, result_temp)
         self.current_temp = result_temp
         self.last_assigned_temp = result_temp
         
-        # Liberar operandos
-        if left_temp != result_temp and left_temp.startswith('t'):
+        # Liberar operandos después de usarlos
+        if left_temp.startswith('t'):
             self.mark_temp_reusable(left_temp)
-        if right_temp != result_temp and right_temp.startswith('t'):
+        if right_temp.startswith('t'):
             self.mark_temp_reusable(right_temp)
         
         return result_temp
@@ -1012,9 +1005,16 @@ class CodeGenerator:
         """
         Carga el valor de un atributo del objeto: result = [base + offset]
         """
+        if not base_temp or base_temp == 'None':
+            raise Exception(f"Base temporal inválida para {class_name}.{member_name}")
+        
+        if class_name not in self.class_layouts:
+            raise Exception(f"Layout de clase '{class_name}' no definido")
+        
         addr_temp = self.property_address(base_temp, class_name, member_name)
         result_temp = self.new_temp()
-        self.emit_quad('[]', addr_temp, None, result_temp)
+        self.emit_quad('[]', addr_temp, None, result_temp, 
+               comment=f"Load {class_name}.{member_name}")
         self.current_temp = result_temp
         return result_temp
 
@@ -1049,7 +1049,8 @@ class CodeGenerator:
             self.emit_quad('push', arg, None, None)
 
         func_label = self._method_label(class_name, method_name)
-        self.emit_quad('call', None, None, func_label)
+        self.emit_quad('call', None, None, func_label,
+               comment=f"Call {class_name}.{method_name}")
 
         total = ((len(arguments) or 0) + 1) * 4  # this + args
         self.emit_quad('add', 'SP', str(total), 'SP')

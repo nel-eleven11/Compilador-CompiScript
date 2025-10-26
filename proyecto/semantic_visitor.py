@@ -154,29 +154,31 @@ class SemanticVisitor(CompiscriptVisitor):
 
     # Visitor para additiveExpr (+ -)
     def visitAdditiveExpr(self, ctx):
-
         children = list(ctx.getChildren())
         if len(children) == 1:
             return self.visit(ctx.multiplicativeExpr(0))
 
-        # ANÁLISIS SEMÁNTICO Y GENERACIÓN DE CÓDIGO EN UNA SOLA VISITA
+        # Visitar primera expresión
         left_type = self.visit(ctx.multiplicativeExpr(0))
         left_temp = self.codegen.current_temp
+        
+        # fix: Marcar left_temp como usado en la expresión completa
+        self.codegen.mark_temp_used(left_temp)
         
         for i in range(len(ctx.children) // 2):
             operator = ctx.children[2*i + 1]
             right_expr = ctx.multiplicativeExpr(i + 1)
             
-            # VISITA ÚNICA (análisis + generación)
             right_type = self.visit(right_expr)
             right_temp = self.codegen.current_temp
             
-            # Verificación semántica
+            # NUEVO: Marcar right_temp como usado
+            self.codegen.mark_temp_used(right_temp)
+            
             result_type = self.check_additive_operation(
                 left_type, right_type, operator, right_expr
             )
             
-            # Generación de código (solo si no hay errores)
             if result_type != ERROR_TYPE:
                 op_text = operator.getText()
                 result_temp = self.codegen.generate_arithmetic_operation(
@@ -1221,12 +1223,12 @@ class SemanticVisitor(CompiscriptVisitor):
 
     def visitClassDeclaration(self, ctx: CompiscriptParser.ClassDeclarationContext):
         class_name = ctx.Identifier(0).getText()
-
-        # Evitar redeclaración en el mismo ámbito
+        
+        # Evitar redeclaración
         if self.symbol_table.is_declared_in_current_scope(class_name):
             self.add_error(ctx, f"Clase '{class_name}' ya declarada en este ámbito")
             return None
-
+        
         # Herencia (opcional)
         parent_cls = None
         if ctx.Identifier(1):
@@ -1234,34 +1236,54 @@ class SemanticVisitor(CompiscriptVisitor):
             parent_cls = self._lookup_class(parent_name)
             if not parent_cls:
                 self.add_error(ctx, f"Clase padre '{parent_name}' no declarada")
-
+        
         cls_sym = ClassSymbol(class_name, scope_id=self.symbol_table.scopes[-1].scope_id, parent_class=parent_cls)
-
+        
         # Registrar clase
         try:
             self.symbol_table.add_symbol(cls_sym)
         except Exception as e:
             self.add_error(ctx, str(e))
             return None
-
+        
         # Entrar ámbito de clase
         self.symbol_table.enter_scope("class")
         prev_cls = self.current_class
         self.current_class = cls_sym
-
-        # Procesar miembros
+        
+        # fix: Procesar PRIMERO los atributos para construir el layout
+        for member in ctx.classMember():
+            if member.variableDeclaration():
+                self.visit(member.variableDeclaration())
+                var_name = member.variableDeclaration().Identifier().getText()
+                sym = self.symbol_table.lookup(var_name, current_scope_only=True)
+                if isinstance(sym, VariableSymbol):
+                    cls_sym.add_attribute(sym)
+            elif member.constantDeclaration():
+                self.visit(member.constantDeclaration())
+                const_name = member.constantDeclaration().Identifier().getText()
+                sym = self.symbol_table.lookup(const_name, current_scope_only=True)
+                if isinstance(sym, VariableSymbol):
+                    cls_sym.add_attribute(sym)
+        
+        # CREAR EL LAYOUT AHORA (antes de procesar métodos)
+        try:
+            self.codegen.define_class_layout(cls_sym)
+        except Exception as e:
+            self.add_error(ctx, f"Error al crear layout de clase '{class_name}': {str(e)}")
+        
+        # AHORA procesar los métodos (que ya pueden usar el layout)
         for member in ctx.classMember():
             if member.functionDeclaration():
                 func_ctx = member.functionDeclaration()
                 func_name = func_ctx.Identifier().getText()
-
+                
                 # === CONSTRUCTOR ===
                 if func_name == "constructor":
-                    # Prohibir tipo de retorno explícito en constructor
+                    # ... código del constructor (igual que antes) ...
                     if func_ctx.type_():
                         self.add_error(func_ctx, "El constructor no debe declarar tipo de retorno")
-
-                    # Crear símbolo del constructor
+                    
                     current_scope_id = self.symbol_table.scopes[-1].scope_id
                     func_symbol = FunctionSymbol("constructor", VOID_TYPE, current_scope_id)
                     cls_sym.add_method(func_symbol)
@@ -1269,11 +1291,10 @@ class SemanticVisitor(CompiscriptVisitor):
                         self.symbol_table.add_symbol(func_symbol)
                     except Exception as e:
                         self.add_error(func_ctx, str(e))
-
-                    # Ámbito de función
+                    
                     self.symbol_table.enter_scope("function")
                     self.current_function = func_symbol
-
+                    
                     # Parámetros del constructor
                     if func_ctx.parameters():
                         for p in func_ctx.parameters().parameter():
@@ -1285,8 +1306,7 @@ class SemanticVisitor(CompiscriptVisitor):
                                 self.symbol_table.add_symbol(p_sym)
                             except Exception as e:
                                 self.add_error(p, str(e))
-
-                    # ---- GENERACIÓN DE CÓDIGO (label del constructor incluido) ----
+                    
                     if not self.errors:
                         params_for_codegen = []
                         if func_ctx.parameters():
@@ -1294,10 +1314,10 @@ class SemanticVisitor(CompiscriptVisitor):
                                 pn = p.Identifier().getText()
                                 pt = self.get_type_from_ctx(p.type_() if p.type_() else None)
                                 params_for_codegen.append((pn, pt or VOID_TYPE))
-
+                        
                         def body_func():
                             self.visit(func_ctx.block())
-
+                        
                         self.codegen.generate_method_declaration(
                             class_name=cls_sym.name,
                             method_name="constructor",
@@ -1307,24 +1327,23 @@ class SemanticVisitor(CompiscriptVisitor):
                             ctx=func_ctx
                         )
                     else:
-                        # Aun así visitar semánticamente
                         self.visit(func_ctx.block())
-
-                    # Validación: los constructores no retornan valor
+                    
                     for ret_t in func_symbol.return_statements:
                         if ret_t != VOID_TYPE and ret_t != ERROR_TYPE:
                             self.add_error(func_ctx, "El constructor no debe retornar un valor")
-
+                    
                     self.symbol_table.exit_scope()
                     self.current_function = None
-
+                
                 # === MÉTODO NORMAL ===
                 else:
+                    # ... código de métodos normales (igual que antes) ...
                     return_type = self.get_type_from_ctx(func_ctx.type_()) if func_ctx.type_() else VOID_TYPE
                     if return_type == VOID_TYPE and func_ctx.type_():
                         self.add_error(func_ctx, "Uso explícito de 'void' no permitido en funciones")
                         continue
-
+                    
                     current_scope_id = self.symbol_table.scopes[-1].scope_id
                     func_symbol = FunctionSymbol(func_name, return_type, current_scope_id)
                     cls_sym.add_method(func_symbol)
@@ -1333,11 +1352,10 @@ class SemanticVisitor(CompiscriptVisitor):
                     except Exception as e:
                         self.add_error(func_ctx, str(e))
                         continue
-
+                    
                     self.symbol_table.enter_scope("function")
                     self.current_function = func_symbol
-
-                    # Parámetros
+                    
                     if func_ctx.parameters():
                         for p in func_ctx.parameters().parameter():
                             pn = p.Identifier().getText()
@@ -1348,8 +1366,7 @@ class SemanticVisitor(CompiscriptVisitor):
                                 self.symbol_table.add_symbol(p_sym)
                             except Exception as e:
                                 self.add_error(p, str(e))
-
-                    # ---- GENERACIÓN DE CÓDIGO (label 'FUNC_<método> (Clase)') ----
+                    
                     if not self.errors:
                         params_for_codegen = []
                         if func_ctx.parameters():
@@ -1357,10 +1374,10 @@ class SemanticVisitor(CompiscriptVisitor):
                                 pn = p.Identifier().getText()
                                 pt = self.get_type_from_ctx(p.type_() if p.type_() else None)
                                 params_for_codegen.append((pn, pt or VOID_TYPE))
-
+                        
                         def body_func():
                             self.visit(func_ctx.block())
-
+                        
                         self.codegen.generate_method_declaration(
                             class_name=cls_sym.name,
                             method_name=func_name,
@@ -1371,8 +1388,7 @@ class SemanticVisitor(CompiscriptVisitor):
                         )
                     else:
                         self.visit(func_ctx.block())
-
-                    # Validación de returns
+                    
                     if return_type != VOID_TYPE:
                         if not func_symbol.return_statements:
                             self.add_error(func_ctx, f"Función '{func_name}' debe retornar un valor")
@@ -1384,30 +1400,10 @@ class SemanticVisitor(CompiscriptVisitor):
                         for ret_type in func_symbol.return_statements:
                             if ret_type != VOID_TYPE and ret_type != ERROR_TYPE:
                                 self.add_error(func_ctx, f"Método void '{func_name}' no debe retornar valor")
-
+                    
                     self.symbol_table.exit_scope()
                     self.current_function = None
-
-            elif member.variableDeclaration():
-                self.visit(member.variableDeclaration())
-                var_name = member.variableDeclaration().Identifier().getText()
-                sym = self.symbol_table.lookup(var_name, current_scope_only=True)
-                if isinstance(sym, VariableSymbol):
-                    cls_sym.add_attribute(sym)
-
-            elif member.constantDeclaration():
-                self.visit(member.constantDeclaration())
-                const_name = member.constantDeclaration().Identifier().getText()
-                sym = self.symbol_table.lookup(const_name, current_scope_only=True)
-                if isinstance(sym, VariableSymbol):
-                    cls_sym.add_attribute(sym)
-
-        # Construir layout de clase para TAC
-        try:
-            self.codegen.define_class_layout(cls_sym)
-        except Exception:
-            pass
-
+        
         # Salir de la clase
         self.symbol_table.exit_scope()
         self.current_class = prev_cls
@@ -1562,11 +1558,16 @@ class SemanticVisitor(CompiscriptVisitor):
             # Acceso a propiedad: .ident  (atributo o método, con herencia)
             elif isinstance(s, CompiscriptParser.PropertyAccessExprContext):
                 member = s.Identifier().getText()
-
+                
+                # NUEVO: Validar que tenemos un objeto válido
                 obj_temp_for_method = self.codegen.current_temp
-
-
-                # Resolver clase del tipo actual
+                if not obj_temp_for_method or obj_temp_for_method == 'None':
+                    self.add_error(s, f"Acceso a propiedad '{member}' sobre valor inválido")
+                    current_type = ERROR_TYPE
+                    pending_func = None
+                    i += 1
+                    continue
+                
                 cls = self._lookup_class(current_type.name) if current_type else None
                 if not cls:
                     self.add_error(s, f"No se puede acceder a miembro '{member}' de '{current_type.name if current_type else '?'}'")
