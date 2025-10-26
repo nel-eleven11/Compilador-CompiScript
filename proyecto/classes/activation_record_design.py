@@ -9,19 +9,37 @@ class ActivationRecordDesign:
         self.parameters = []
         self.locals = []
         
-    def add_parameter(self, name, type):
-        # Los parámetros generalmente tienen offsets negativos (crecen hacia abajo)
-        offset = -4 * (len(self.parameters) + 1)  # -4, -8, -12, etc.
-        self.offsets[name] = offset
-        self.parameters.append(name)
-        # No aumentamos el size total para parámetros (se manejan en el frame del llamador)
+    def add_parameter(self, name, type_):
+        """
+        Parámetros:
+        FP[0] = primer parámetro (__this en métodos, o primer param en funciones)
+        FP[4] = segundo parámetro
+        FP[8] = tercer parámetro, etc.
+        """
+        offset = len(self.parameters) * 4
+        self.parameters.append({
+            'name': name,
+            'type': type_,
+            'offset': offset
+        })
+        # Actualizar tamaño total
+        self.size = max(self.size, offset + 4)
         
-    def add_local(self, name, type):
-        # Las variables locales tienen offsets positivos (crecen hacia arriba)
-        type_size = self._get_type_size(type)
-        self.offsets[name] = self.size
-        self.locals.append(name)
-        self.size += type_size
+    def add_local(self, name, type_):
+        """
+        Variables locales van DESPUÉS de los parámetros
+        """
+        # Offset base: después de todos los parámetros
+        base_offset = len(self.parameters) * 4
+        local_offset = base_offset + (len(self.locals) * 4)
+        
+        self.locals.append({
+            'name': name,
+            'type': type_,
+            'offset': local_offset
+        })
+        # Actualizar tamaño total
+        self.size = max(self.size, local_offset + 4)
         
     def _get_type_size(self, type):
         # Usar el width del tipo si está disponible, sino valores por defecto
@@ -38,8 +56,16 @@ class ActivationRecordDesign:
         return type_sizes.get(type.name, 4)  # 4 bytes por defecto (puntero)
     
     def get_offset(self, name):
-        return self.offsets.get(name, None)
+        """Busca offset de parámetro o local por nombre"""
+        # Buscar en parámetros
+        for param in self.parameters:
+            if param['name'] == name:
+                return param['offset']
+        # Buscar en locales
+        for local in self.locals:
+            if local['name'] == name:
+                return local['offset']
+        return None
     
     def __str__(self):
-        return (f"AR Design for {self.function_name}: "
-                f"Size={self.size}, Params={self.parameters}, Locals={self.locals}")
+        return f"AR({self.function_name}): size={self.size}, params={len(self.parameters)}, locals={len(self.locals)}"

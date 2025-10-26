@@ -647,20 +647,23 @@ class SemanticVisitor(CompiscriptVisitor):
         return source_type.can_assign_to(target_type)
     
     def visitAssignment(self, ctx):
-
         # Caso b) property assign: hay DOS expresiones en el contexto,  baseExpr . Identifier = valueExpr
         if len(ctx.expression()) == 2 and ctx.Identifier():
             base_expr = ctx.expression(0)
             value_expr = ctx.expression(1)
             member_name = ctx.Identifier().getText()
 
-            # Visitar base primero y guardar su temporal (this/base)
+            # PROBLEMA ANTERIOR: visitamos base primero
+            # Esto carga 'this' pero luego al visitar value_expr,
+            # current_temp se sobrescribe!
+            
+            # SOLUCIÓN: Visitar value PRIMERO, guardar su temporal
+            value_type = self.visit(value_expr)
+            value_temp = self.codegen.current_temp  # Guardar INMEDIATAMENTE
+            
+            # AHORA sí visitar base (puede ser 'this' o una variable)
             base_type = self.visit(base_expr)
             base_temp = self.codegen.current_temp
-
-            # Luego visitar el valor a asignar
-            value_type = self.visit(value_expr)
-            value_temp = self.codegen.current_temp
 
             if base_type == ERROR_TYPE or value_type == ERROR_TYPE:
                 return ERROR_TYPE
@@ -668,10 +671,10 @@ class SemanticVisitor(CompiscriptVisitor):
             # Debe ser instancia de clase
             cls_sym = self._lookup_class(base_type.name) if base_type else None
             if not cls_sym:
-                self.add_error(ctx, f"No se puede asignar a miembro '{member_name}' de tipo no-clase '{base_type.name if base_type else '?'}'")
+                self.add_error(ctx, f"No se puede asignar a miembro '{member_name}' de tipo no-clase")
                 return ERROR_TYPE
 
-            # Buscar atributo en la jerarquía (incluye herencia)
+            # Buscar atributo en la jerarquía
             attr = self.symbol_table.lookup_in_class(cls_sym.name, member_name)
             if not isinstance(attr, VariableSymbol):
                 self.add_error(ctx, f"Miembro '{member_name}' no existe en clase '{cls_sym.name}'")
@@ -685,7 +688,7 @@ class SemanticVisitor(CompiscriptVisitor):
                 self.add_error(ctx, f"No se puede asignar {value_type.name} a {attr.type.name}")
                 return ERROR_TYPE
 
-            # GENERACIÓN DE CÓDIGO: store en atributo (base + offset) = value
+            # GENERACIÓN DE CÓDIGO con temporales CORRECTOS
             if not self.errors:
                 self.codegen.generate_property_store(
                     base_temp, cls_sym.name, member_name, value_temp, ctx
@@ -693,48 +696,40 @@ class SemanticVisitor(CompiscriptVisitor):
 
             return value_type
 
-
         # Caso a) asignación simple a variable
-        # Obtener el nombre de la variable
         var_name = ctx.Identifier().getText() if ctx.Identifier() else None
         if not var_name:
             return self.visitChildren(ctx)
 
-        # Buscar la variable en el ámbito actual primero, luego en superiores
         symbol = self.symbol_table.lookup(var_name)
         
-        # Si no se encuentra en ningún ámbito
         if not symbol:
             self.add_error(ctx, f"Variable '{var_name}' no declarada")
             return ERROR_TYPE
 
-        # Verificar si es constante
         if symbol.is_const:
             self.add_error(ctx, f"No se puede reasignar la constante '{var_name}'")
             return ERROR_TYPE
 
-        # Obtener tipo de la expresión
         expr_ctx = ctx.expression()[0] if isinstance(ctx.expression(), list) else ctx.expression()
         self.codegen.in_assignment_context = True
         expr_type = self.visit(expr_ctx)
         self.codegen.in_assignment_context = False
 
-        # Caso especial: variable con tipo inferido inicializado con null
+        # Caso especial: variable con tipo inferido
         if (symbol.type == NULL_TYPE and 
             symbol.is_type_inferred and
             expr_type != NULL_TYPE and 
             expr_type != VOID_TYPE and 
             expr_type != ERROR_TYPE):
-            # Actualizar el tipo de la variable dinámicamente
             symbol.type = expr_type
         else:
-            # Verificación normal de tipos
             if expr_type != ERROR_TYPE and not expr_type.can_assign_to(symbol.type):
                 self.add_error(ctx, f"No se puede asignar {expr_type.name} a {symbol.type.name}")
 
-        # GENERACIÓN DE CÓDIGO, para asignación simple
+        # GENERACIÓN DE CÓDIGO
         if not self.errors:
-            expr_value = self.codegen.current_temp  # literal o temporal
+            expr_value = self.codegen.current_temp
             var_address = self.codegen.get_variable_address(var_name)
             self.codegen.generate_assignment(var_address, expr_value, ctx)
 
@@ -1215,9 +1210,11 @@ class SemanticVisitor(CompiscriptVisitor):
         if not self.current_class:
             self.add_error(ctx, "Uso de 'this' fuera de una clase")
             return ERROR_TYPE
-        # Cargar el parámetro oculto '__this' desde el AR del método actual
-        tmp = self.codegen.generate_parameter_access('__this', ctx)
+        
+        # CAMBIO: Usar el helper para cargar 'this'
+        tmp = self.codegen.load_this_pointer(ctx)
         self.codegen.current_temp = tmp
+        
         return self._class_type(self.current_class.name)
 
 
@@ -1559,8 +1556,14 @@ class SemanticVisitor(CompiscriptVisitor):
             elif isinstance(s, CompiscriptParser.PropertyAccessExprContext):
                 member = s.Identifier().getText()
                 
-                # NUEVO: Validar que tenemos un objeto válido
-                obj_temp_for_method = self.codegen.current_temp
+                # NUEVO: Si la base es 'this', recargar desde FP[0]
+                if isinstance(base, CompiscriptParser.ThisExprContext):
+                    obj_temp_for_method = self.codegen.load_this_pointer(s)
+                else:
+                    # Usar el temporal actual (ya cargado)
+                    obj_temp_for_method = self.codegen.current_temp
+                
+                # VALIDACIÓN
                 if not obj_temp_for_method or obj_temp_for_method == 'None':
                     self.add_error(s, f"Acceso a propiedad '{member}' sobre valor inválido")
                     current_type = ERROR_TYPE
@@ -1574,11 +1577,10 @@ class SemanticVisitor(CompiscriptVisitor):
                     current_type = ERROR_TYPE
                     pending_func = None
                 else:
-                    # Buscar miembro en jerarquía (atributo / método)
                     found = self.symbol_table.lookup_in_class(cls.name, member)
-
+                    
                     if isinstance(found, VariableSymbol):
-                        # Carga de atributo: t = [obj + offset]
+                        # CAMBIO: Pasar obj_temp_for_method (que es 'this' correcto)
                         load_temp = self.codegen.generate_property_load(
                             base_temp=obj_temp_for_method,
                             class_name=cls.name,
@@ -1587,12 +1589,11 @@ class SemanticVisitor(CompiscriptVisitor):
                         )
                         current_type = found.type
                         pending_func = None
-
+                    
                     elif isinstance(found, FunctionSymbol):
-                        # ¿Se invoca de inmediato?
+                        # Llamada a método...
                         if i + 1 < len(suffixes) and isinstance(suffixes[i + 1], CompiscriptParser.CallExprContext):
                             call = suffixes[i + 1]
-                            # Recolectar tipos y temporales de argumentos
                             args_types = []
                             args_temps = []
                             if call.arguments():
@@ -1600,13 +1601,13 @@ class SemanticVisitor(CompiscriptVisitor):
                                     t = self.visit(e)
                                     args_types.append(t)
                                     args_temps.append(self.codegen.current_temp)
+                            
+                            # Validaciones...
                             if len(args_types) != len(found.parameters):
                                 self.add_error(call, f"Método '{member}' espera {len(found.parameters)} argumentos, recibió {len(args_types)}")
-                            else:
-                                for j, (p, a) in enumerate(zip(found.parameters, args_types), start=1):
-                                    if a != ERROR_TYPE and not a.can_assign_to(p.type):
-                                        self.add_error(call, f"Argumento {j} de método '{member}': esperado {p.type.name}, encontrado {a.name}")
+                            
                             if not self.errors:
+                                # CAMBIO: Pasar obj_temp_for_method (this correcto)
                                 result_temp = self.codegen.generate_method_call(
                                     this_temp=obj_temp_for_method,
                                     class_name=cls.name,
@@ -1615,9 +1616,9 @@ class SemanticVisitor(CompiscriptVisitor):
                                     ctx=call
                                 )
                                 self.codegen.current_temp = result_temp
-
+                            
                             current_type = found.return_type
-                            i += 1  # consumimos el CallExpr
+                            i += 1
                             pending_func = None
                         else:
                             self.add_error(s, f"Se esperaba invocar al método '{member}'")
@@ -1627,9 +1628,6 @@ class SemanticVisitor(CompiscriptVisitor):
                         self.add_error(s, f"Miembro '{member}' no existe en clase '{cls.name}'")
                         current_type = ERROR_TYPE
                         pending_func = None
-            else:
-                current_type = ERROR_TYPE
-                pending_func = None
 
             i += 1
 

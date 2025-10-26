@@ -278,18 +278,33 @@ class CodeGenerator:
         return temp
 
     def generate_load_variable(self, var_name, ctx=None):
+        """
+        Genera código para cargar una variable.
+        Prioridad: Parámetro > Local > Global
+        """
+        # 1. Verificar si es un parámetro de la función actual
+        function_context = getattr(self, 'function_context', None)
+        if function_context:
+            ar_design = function_context['ar_design']
+            offset = ar_design.get_offset(var_name)
+            
+            if offset is not None:
+                # Es un parámetro o local - cargar desde FP[offset]
+                temp = self.new_temp()
+                self.emit_quad('@', f"FP[{offset}]", None, temp,
+                            comment=f"Load param/local '{var_name}'")
+                self.current_temp = temp
+                self.mark_temp_used(temp)
+                self.last_assigned_temp = temp
+                return temp
+        
+        # 2. Fallback: variable global
         address = self.get_variable_address(var_name)
-        
-        # fix: Siempre crear nuevo temporal para loads
-        # (evita conflictos cuando la variable se usa múltiples veces)
         temp = self.new_temp()
-        
-        self.emit_quad('@', address, None, temp)
+        self.emit_quad('@', address, None, temp,
+                    comment=f"Load global '{var_name}'")
         self.current_temp = temp
-        
-        # Marcar como usado en la expresión actual
         self.mark_temp_used(temp)
-        
         self.last_assigned_temp = temp
         return temp
 
@@ -668,32 +683,30 @@ class CodeGenerator:
         return {'func_label': func_label, 'ar_design': ar_design}
 
     def generate_method_declaration(self, class_name, method_name, parameters, return_type, body_func, ctx=None):
-        """
-        Genera código para declaración de MÉTODO de clase.
-            - Crea AR con clave única 'Clase::método'
-            - Inserta parámetro oculto '__this' como puntero a la instancia
-            - Emite label 'FUNC_<método> (Clase)'
-        """
         func_key = self._method_key(class_name, method_name)
-
-        # Crear AR (clave única por clase::método)
+        self.set_current_function(func_key)
+        
         ar_design = self.create_ar_design(func_key)
-
-        # 'this' (puntero a la instancia) como primer parámetro oculto
+        
+        # CRÍTICO: __this SIEMPRE es el primer parámetro (FP[0])
         ar_design.add_parameter('__this', None)
-
-        # Parámetros declarados por el usuario
+        
+        # Parámetros del usuario
         for param_name, param_type in parameters or []:
             ar_design.add_parameter(param_name, param_type)
-
-        # Etiqueta de inicio del método
+        
+        # 🔍 DEBUG: Imprimir estructura del AR
+        print(f"\n=== AR para {class_name}::{method_name} ===")
+        print(f"Size total: {ar_design.size}")
+        for i, param in enumerate(ar_design.parameters):
+            print(f"  FP[{param['offset']}]: {param['name']} ({param['type'].name if param['type'] else 'unknown'})")
+        print()
+        
+        # Resto del código igual...
         func_label = self._method_label(class_name, method_name)
         self.emit_quad('label', None, None, func_label)
-
-        # Prólogo
         self.emit_quad('enter', str(ar_design.size), None, None)
-
-        # Guardar contexto de función (usar clave única para evitar colisiones)
+        
         old_function_context = getattr(self, 'function_context', None)
         self.function_context = {
             'name': func_key,
@@ -703,21 +716,16 @@ class CodeGenerator:
             'class_name': class_name,
             'method_name': method_name
         }
-
-        # Cuerpo
+        
         if body_func:
             body_func()
-
-        # Si es void y no hubo return explícito, emitir return vacío
+        
         if return_type and getattr(return_type, 'name', None) == 'void':
             self.emit_quad('return', None, None, None)
-
-        # Epílogo
+        
         self.emit_quad('leave', None, None, None)
-
-        # Restaurar contexto
         self.function_context = old_function_context
-
+        
         return {'func_label': func_label, 'ar_design': ar_design}
 
 
@@ -991,15 +999,42 @@ class CodeGenerator:
     def property_address(self, base_temp, class_name, member_name):
         """
         Calcula la dirección (base + offset) de un atributo de objeto.
-        Devuelve un temporal con la dirección efectiva.
+        CRÍTICO: base_temp DEBE ser el temporal que contiene la dirección del objeto
         """
+        # Validación estricta
+        if not base_temp or not isinstance(base_temp, str):
+            raise Exception(f"property_address: base_temp inválido '{base_temp}'")
+        
         layout = self.class_layouts.get(class_name, {})
+        if not layout:
+            raise Exception(f"Layout de clase '{class_name}' no existe")
+        
         fields = layout.get("fields", {})
-        info = fields.get(member_name, {"offset": 0})
+        info = fields.get(member_name)
+        
+        if not info:
+            raise Exception(f"Atributo '{member_name}' no existe en clase '{class_name}'")
+        
         off = info["offset"]
         addr_temp = self.new_temp()
-        self.emit_quad('+', base_temp, str(off), addr_temp)
+        
+        # CRÍTICO: base_temp YA contiene la dirección del objeto
+        # Solo sumamos el offset
+        self.emit_quad('+', base_temp, str(off), addr_temp,
+                    comment=f"Address of {class_name}.{member_name}")
+        
         return addr_temp
+    
+    def load_this_pointer(self, ctx=None):
+        """
+        Carga el puntero 'this' desde el parámetro oculto __this en FP[0]
+        Debe llamarse al inicio de cada acceso a miembro en métodos
+        """
+        this_temp = self.new_temp()
+        self.emit_quad('@', 'FP[0]', None, this_temp, 
+                    comment="Load __this pointer")
+        self.mark_temp_used(this_temp)  # Proteger de reutilización
+        return this_temp
 
     def generate_property_load(self, base_temp, class_name, member_name, ctx=None):
         """
@@ -1011,10 +1046,13 @@ class CodeGenerator:
         if class_name not in self.class_layouts:
             raise Exception(f"Layout de clase '{class_name}' no definido")
         
+        # CAMBIO: property_address YA calcula base + offset
         addr_temp = self.property_address(base_temp, class_name, member_name)
         result_temp = self.new_temp()
+        
+        # Load indirecto: result = [addr]
         self.emit_quad('[]', addr_temp, None, result_temp, 
-               comment=f"Load {class_name}.{member_name}")
+            comment=f"Load {class_name}.{member_name}")
         self.current_temp = result_temp
         return result_temp
 
@@ -1022,8 +1060,18 @@ class CodeGenerator:
         """
         Almacena un valor en un atributo del objeto: [base + offset] = value
         """
+        if not base_temp or base_temp == 'None':
+            raise Exception(f"Base temporal inválida para {class_name}.{member_name}")
+        
+        if class_name not in self.class_layouts:
+            raise Exception(f"Layout de clase '{class_name}' no definido")
+        
+        # CAMBIO: property_address calcula base + offset
         addr_temp = self.property_address(base_temp, class_name, member_name)
-        self.emit_quad('[]=', value_temp, None, addr_temp)
+        
+        # Store indirecto: [addr] = value
+        self.emit_quad('[]=', value_temp, None, addr_temp,
+            comment=f"Store {class_name}.{member_name}")
         return addr_temp
 
     def generate_method_call(self, this_temp, class_name, method_name, arguments, ctx=None):
@@ -1034,27 +1082,31 @@ class CodeGenerator:
         - Limpia la pila y hace pop del valor de retorno
         """
         func_key = self._method_key(class_name, method_name)
-
-        # Asegurar AR (si no existe aún)
+    
         ar_design = self.get_ar_design(func_key)
         if not ar_design:
             ar_design = self.create_ar_design(func_key)
-            # Importante: reflejar que existe '__this' como primer parámetro
             ar_design.add_parameter('__this', None)
-
-        # push this
-        self.emit_quad('push', this_temp, None, None)
-        # push args en orden reverso
+        
+        # 🔍 DEBUG
+        print(f"\n=== Llamada a {class_name}.{method_name} ===")
+        print(f"  this_temp: {this_temp}")
+        print(f"  args: {arguments}")
+        
+        # Push en orden: args reverso, luego this
         for arg in reversed(arguments or []):
             self.emit_quad('push', arg, None, None)
-
+        
+        self.emit_quad('push', this_temp, None, None, 
+                    comment=f"Push __this (será FP[0])")
+        
         func_label = self._method_label(class_name, method_name)
         self.emit_quad('call', None, None, func_label,
-               comment=f"Call {class_name}.{method_name}")
-
-        total = ((len(arguments) or 0) + 1) * 4  # this + args
+            comment=f"Call {class_name}.{method_name}")
+        
+        total = ((len(arguments) or 0) + 1) * 4
         self.emit_quad('add', 'SP', str(total), 'SP')
-
+        
         result_temp = self.new_temp()
         self.emit_quad('pop', None, None, result_temp)
         self.current_temp = result_temp
