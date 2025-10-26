@@ -285,6 +285,10 @@ class CodeGenerator:
         
         self.emit_quad('@', address, None, temp)
         self.current_temp = temp
+        
+        # CRÍTICO: Marcar este temporal como usado
+        self.mark_temp_used(temp)
+        
         self.last_assigned_temp = temp
         return temp
 
