@@ -109,13 +109,21 @@ class MIPSGenerator:
         elif op == '@':
             return self._translate_load_quad(quad)
 
+        # Operaciones de comparación
+        elif op in ['<', '>', '<=', '>=', '==', '!=']:
+            return self._translate_comparison_quad(quad)
+
         # Operaciones de salto
-        elif op in ['goto', 'if', 'ifFalse']:
+        elif op in ['goto', 'if', 'if_false', 'ifFalse']:
             return self._translate_jump_quad(quad)
 
         # Operaciones de función
         elif op in ['call', 'param', 'return']:
             return self._translate_function_quad(quad)
+
+        # Operación de etiqueta
+        elif op == 'label':
+            return self._translate_label_quad(quad)
 
         else:
             return [f"# TODO: Translate operation '{op}'"]
@@ -232,9 +240,94 @@ class MIPSGenerator:
 
         return instructions
 
+    def _translate_comparison_quad(self, quad):
+        """
+        Traduce cuádruplos de comparación: (op, arg1, arg2, result)
+        Ejemplo: (<, t0, t1, t2) -> slt $t2, $t0, $t1
+
+        En MIPS, las comparaciones usan:
+        - slt (set less than): result = 1 si arg1 < arg2, 0 si no
+        - seq (set equal): result = 1 si arg1 == arg2, 0 si no
+        - sne (set not equal): result = 1 si arg1 != arg2, 0 si no
+        - Para <=, >, >= usamos combinaciones
+        """
+        instructions = []
+
+        # Obtener registros para los operandos
+        arg1_reg = self.register_allocator.get_reg(quad.arg1)
+        arg2_reg = self.register_allocator.get_reg(quad.arg2)
+        result_reg = self.register_allocator.get_reg(quad.result)
+
+        # Cargar arg1
+        if self._is_temporary(quad.arg1):
+            # Si es temporal, ya debería estar en registro
+            pass
+        elif self._is_immediate(quad.arg1):
+            instructions.append(f"li {arg1_reg}, {quad.arg1}")
+        else:
+            # Es una variable, cargar desde memoria
+            addr = self._get_memory_label(quad.arg1)
+            instructions.append(f"lw {arg1_reg}, {addr}")
+
+        # Cargar arg2
+        if self._is_temporary(quad.arg2):
+            # Si es temporal, ya debería estar en registro
+            pass
+        elif self._is_immediate(quad.arg2):
+            instructions.append(f"li {arg2_reg}, {quad.arg2}")
+        else:
+            # Es una variable, cargar desde memoria
+            addr = self._get_memory_label(quad.arg2)
+            instructions.append(f"lw {arg2_reg}, {addr}")
+
+        # Realizar la comparación
+        if quad.op == '<':
+            # slt: set less than
+            instructions.append(f"slt {result_reg}, {arg1_reg}, {arg2_reg}")
+
+        elif quad.op == '<=':
+            # <= es equivalente a: NOT (arg1 > arg2)
+            # arg1 <= arg2 es lo mismo que arg2 >= arg1
+            # Usamos: slt $temp, arg2, arg1; xori result, $temp, 1
+            temp_reg = self.register_allocator.get_reg_temp("cmp_temp")
+            instructions.append(f"slt {temp_reg}, {arg2_reg}, {arg1_reg}")  # temp = arg2 < arg1
+            instructions.append(f"xori {result_reg}, {temp_reg}, 1")  # result = NOT temp
+
+        elif quad.op == '>':
+            # > es lo mismo que arg2 < arg1
+            instructions.append(f"slt {result_reg}, {arg2_reg}, {arg1_reg}")
+
+        elif quad.op == '>=':
+            # >= es equivalente a: NOT (arg1 < arg2)
+            temp_reg = self.register_allocator.get_reg_temp("cmp_temp")
+            instructions.append(f"slt {temp_reg}, {arg1_reg}, {arg2_reg}")  # temp = arg1 < arg2
+            instructions.append(f"xori {result_reg}, {temp_reg}, 1")  # result = NOT temp
+
+        elif quad.op == '==':
+            # == : xor + seq (set equal to zero)
+            # Si arg1 == arg2, entonces arg1 XOR arg2 = 0
+            instructions.append(f"xor {result_reg}, {arg1_reg}, {arg2_reg}")
+            instructions.append(f"sltiu {result_reg}, {result_reg}, 1")  # result = (result == 0)
+
+        elif quad.op == '!=':
+            # != : xor + sne (set not equal to zero)
+            # Si arg1 != arg2, entonces arg1 XOR arg2 != 0
+            instructions.append(f"xor {result_reg}, {arg1_reg}, {arg2_reg}")
+            instructions.append(f"sltu {result_reg}, $zero, {result_reg}")  # result = (result != 0)
+
+        return instructions
+
     def _translate_jump_quad(self, quad):
         """Traduce cuádruplos de salto (por implementar)"""
         return [f"# TODO: Translate jump operation '{quad.op}'"]
+
+    def _translate_label_quad(self, quad):
+        """
+        Traduce cuádruplos de etiqueta: (label, None, None, L0)
+        Simplemente genera la etiqueta en MIPS
+        """
+        label_name = quad.result
+        return [f"{label_name}:"]
 
     def _translate_function_quad(self, quad):
         """Traduce cuádruplos de función (por implementar)"""
