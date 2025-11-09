@@ -3,6 +3,7 @@ from antlr4 import *
 from CompiscriptLexer import CompiscriptLexer
 from CompiscriptParser import CompiscriptParser
 from semantic_visitor import SemanticVisitor
+from classes.MIPS_generator import MIPSGenerator
 import unittest
 
 def analyze_file(file_path):
@@ -70,6 +71,21 @@ def main(argv):
 
     print("\n")
     analyzer.codegen.print_memory_map()
+
+    # Generar código MIPS
+    if not analyzer.errors:
+        print("\n=== GENERANDO CÓDIGO MIPS ===\n")
+        mips_gen = MIPSGenerator(analyzer.codegen, analyzer.symbol_table)
+        mips_code = mips_gen.generate_mips_code()
+
+        # Guardar en archivo .asm
+        output_file = argv[1].replace('.cps', '.asm')
+        with open(output_file, 'w') as f:
+            f.write(mips_code)
+
+        print(f"Código MIPS generado en: {output_file}")
+        print("\n=== CÓDIGO MIPS GENERADO ===\n")
+        print(mips_code)
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
