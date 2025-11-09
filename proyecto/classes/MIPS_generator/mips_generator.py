@@ -318,8 +318,68 @@ class MIPSGenerator:
         return instructions
 
     def _translate_jump_quad(self, quad):
-        """Traduce cuádruplos de salto (por implementar)"""
-        return [f"# TODO: Translate jump operation '{quad.op}'"]
+        """
+        Traduce cuádruplos de salto y control de flujo
+
+        Tipos de saltos:
+        - goto: Salto incondicional
+        - if: Salto si la condición es verdadera (!=0)
+        - if_false/ifFalse: Salto si la condición es falsa (==0)
+        """
+        instructions = []
+
+        if quad.op == 'goto':
+            # Salto incondicional: (goto, None, None, label)
+            label = quad.result
+            instructions.append(f"j {label}")
+
+        elif quad.op in ['if', 'if_true']:
+            # Salto condicional si verdadero: (if, condition, None, label)
+            # En MIPS: bne condition, $zero, label (branch if not equal to zero)
+            condition = quad.arg1
+            label = quad.result
+
+            # Obtener registro de la condición
+            cond_reg = self.register_allocator.get_reg(condition)
+
+            # Cargar condición si es necesario
+            if self._is_temporary(condition):
+                # Ya está en registro
+                pass
+            elif self._is_immediate(condition):
+                instructions.append(f"li {cond_reg}, {condition}")
+            else:
+                # Es una variable
+                addr = self._get_memory_label(condition)
+                instructions.append(f"lw {cond_reg}, {addr}")
+
+            # Branch if not equal to zero (si es verdadero)
+            instructions.append(f"bne {cond_reg}, $zero, {label}")
+
+        elif quad.op in ['if_false', 'ifFalse']:
+            # Salto condicional si falso: (if_false, condition, None, label)
+            # En MIPS: beq condition, $zero, label (branch if equal to zero)
+            condition = quad.arg1
+            label = quad.result
+
+            # Obtener registro de la condición
+            cond_reg = self.register_allocator.get_reg(condition)
+
+            # Cargar condición si es necesario
+            if self._is_temporary(condition):
+                # Ya está en registro
+                pass
+            elif self._is_immediate(condition):
+                instructions.append(f"li {cond_reg}, {condition}")
+            else:
+                # Es una variable
+                addr = self._get_memory_label(condition)
+                instructions.append(f"lw {cond_reg}, {addr}")
+
+            # Branch if equal to zero (si es falso)
+            instructions.append(f"beq {cond_reg}, $zero, {label}")
+
+        return instructions
 
     def _translate_label_quad(self, quad):
         """

@@ -1,4 +1,5 @@
 import sys
+import os
 from antlr4 import *
 from CompiscriptLexer import CompiscriptLexer
 from CompiscriptParser import CompiscriptParser
@@ -78,8 +79,16 @@ def main(argv):
         mips_gen = MIPSGenerator(analyzer.codegen, analyzer.symbol_table)
         mips_code = mips_gen.generate_mips_code()
 
-        # Guardar en archivo .asm
-        output_file = argv[1].replace('.cps', '.asm')
+        # Determinar nombre y ubicación del archivo de salida
+        input_file = argv[1]
+        base_name = os.path.basename(input_file)
+        file_name = os.path.splitext(base_name)[0]
+
+        # Guardar en la carpeta test_asm
+        output_dir = "test_asm"
+        os.makedirs(output_dir, exist_ok=True)
+        output_file = os.path.join(output_dir, f"{file_name}.asm")
+
         with open(output_file, 'w') as f:
             f.write(mips_code)
 
