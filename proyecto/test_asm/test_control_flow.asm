@@ -17,7 +17,7 @@ main:
     sw $ra, 0($sp)
 
     # Quadruple 0: (=, 10, None, 0x1000)
-    li $t0, 2
+    li $t0, 10
     sw $t0, var_a
 
     # Quadruple 1: (=, 5, None, 0x1004)
@@ -28,43 +28,35 @@ main:
     li $t0, 0
     sw $t0, var_max
 
-    # Quadruple 3: (@, 0x1000, None, t0)  # Load global 'a'
+    # Quadruple 3: (>, 0x1000, 0x1004, t0)
     lw $t0, var_a
-
-    # Quadruple 4: (@, 0x1004, None, t1)  # Load global 'b'
     lw $t1, var_b
-
-    # Quadruple 5: (>, t0, t1, t2)
     slt $t2, $t1, $t0
 
-    # Quadruple 6: (if, t2, None, L0)
+    # Quadruple 4: (if, t0, None, L0)
     bne $t2, $zero, L0
 
-    # Quadruple 7: (goto, None, None, L1)
+    # Quadruple 5: (goto, None, None, L1)
     j L1
 
-    # Quadruple 8: (label, None, None, L0)
+    # Quadruple 6: (label, None, None, L0)
     L0:
 
-    # Quadruple 9: (@, 0x1000, None, t3)  # Load global 'a'
-    lw $t3, var_a
+    # Quadruple 7: (=, 0x1000, None, 0x1008)
+    lw $t0, var_a
+    sw $t0, var_max
 
-    # Quadruple 10: (=, t3, None, 0x1008)
-    sw $t3, var_max
-
-    # Quadruple 11: (goto, None, None, L2)
+    # Quadruple 8: (goto, None, None, L2)
     j L2
 
-    # Quadruple 12: (label, None, None, L1)
+    # Quadruple 9: (label, None, None, L1)
     L1:
 
-    # Quadruple 13: (@, 0x1004, None, t4)  # Load global 'b'
-    lw $t4, var_b
+    # Quadruple 10: (=, 0x1004, None, 0x1008)
+    lw $t0, var_b
+    sw $t0, var_max
 
-    # Quadruple 14: (=, t4, None, 0x1008)
-    sw $t4, var_max
-
-    # Quadruple 15: (label, None, None, L2)
+    # Quadruple 11: (label, None, None, L2)
     L2:
 
     # Main epilogue

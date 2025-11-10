@@ -32,54 +32,40 @@ main:
     li $t0, 0
     sw $t0, var_c
 
-    # Quadruple 3: (@, 0x1000, None, t0)  # Load global 'a'
+    # Quadruple 3: (NEG, 0x1000, None, t0)
     lw $t0, var_a
-
-    # Quadruple 4: (NEG, t0, None, t1)
     sub $t1, $zero, $t0
 
-    # Quadruple 5: (=, t1, None, 0x100C)
+    # Quadruple 4: (=, t0, None, 0x100C)
     sw $t1, var_neg_a
 
-    # Quadruple 6: (@, 0x1000, None, t1)  # Load global 'a'
-    lw $t1, var_a
-
-    # Quadruple 7: (@, 0x1004, None, t2)  # Load global 'b'
+    # Quadruple 5: (%, 0x1000, 0x1004, t0)
+    lw $t0, var_a
     lw $t2, var_b
+    div $t0, $t2
+    mfhi $t1  # Get remainder (modulo)
 
-    # Quadruple 8: (%, t1, t2, t3)
-    div $t1, $t2
-    mfhi $t3  # Get remainder (modulo)
+    # Quadruple 6: (=, t0, None, 0x1010)
+    sw $t1, var_mod_result
 
-    # Quadruple 9: (=, t3, None, 0x1010)
-    sw $t3, var_mod_result
-
-    # Quadruple 10: (=, true, None, 0x1014)
+    # Quadruple 7: (=, true, None, 0x1014)
     li $t0, 1
     sw $t0, var_x
 
-    # Quadruple 11: (@, 0x1014, None, t3)  # Load global 'x'
+    # Quadruple 8: (!, 0x1014, None, t0)
     lw $t3, var_x
+    sltiu $t1, $t3, 1
 
-    # Quadruple 12: (!, t3, None, true)
-    sltiu $t4, $t3, 1
+    # Quadruple 9: (=, t0, None, 0x1018)
+    sw $t1, var_not_x
 
-    # Quadruple 13: (=, true, None, 0x1018)
-    li $t0, 1
-    sw $t0, var_not_x
+    # Quadruple 10: (+, 0x1000, 0x100C, t0)
+    lw $t0, var_a
+    lw $t4, var_neg_a
+    add $t1, $t0, $t4
 
-    # Quadruple 14: (@, 0x1000, None, true)  # Load global 'a'
-    lw $t4, var_a
-
-    # Quadruple 15: (@, 0x100C, None, t4)  # Load global 'neg_a'
-    lw $t5, var_neg_a
-
-    # Quadruple 16: (+, true, t4, t5)
-    li $t4, true
-    add $t6, $t4, $t5
-
-    # Quadruple 17: (=, t5, None, 0x1008)
-    sw $t6, var_c
+    # Quadruple 11: (=, t0, None, 0x1008)
+    sw $t1, var_c
 
     # Main epilogue
     lw $ra, 0($sp)

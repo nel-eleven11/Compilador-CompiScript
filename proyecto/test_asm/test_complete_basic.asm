@@ -38,175 +38,127 @@ main:
     li $t0, 0
     sw $t0, var_result
 
-    # Quadruple 3: (@, 0x1000, None, t0)  # Load global 'a'
+    # Quadruple 3: (+, 0x1000, 0x1004, t0)
     lw $t0, var_a
-
-    # Quadruple 4: (@, 0x1004, None, t1)  # Load global 'b'
     lw $t1, var_b
-
-    # Quadruple 5: (+, t0, t1, t2)
     add $t2, $t0, $t1
 
-    # Quadruple 6: (=, t2, None, 0x100C)
+    # Quadruple 4: (=, t0, None, 0x100C)
     sw $t2, var_sum
 
-    # Quadruple 7: (@, 0x1000, None, t2)  # Load global 'a'
-    lw $t2, var_a
+    # Quadruple 5: (-, 0x1000, 0x1004, t0)
+    lw $t0, var_a
+    lw $t1, var_b
+    sub $t2, $t0, $t1
 
-    # Quadruple 8: (@, 0x1004, None, t3)  # Load global 'b'
-    lw $t3, var_b
+    # Quadruple 6: (=, t0, None, 0x1010)
+    sw $t2, var_diff
 
-    # Quadruple 9: (-, t2, t3, t4)
-    sub $t4, $t2, $t3
+    # Quadruple 7: (*, 0x1000, 0x1004, t0)
+    lw $t0, var_a
+    lw $t1, var_b
+    mul $t2, $t0, $t1
 
-    # Quadruple 10: (=, t4, None, 0x1010)
-    sw $t4, var_diff
+    # Quadruple 8: (=, t0, None, 0x1014)
+    sw $t2, var_prod
 
-    # Quadruple 11: (@, 0x1000, None, t4)  # Load global 'a'
-    lw $t4, var_a
+    # Quadruple 9: (/, 0x1000, 0x1004, t0)
+    lw $t0, var_a
+    lw $t1, var_b
+    div $t0, $t1
+    mflo $t2  # quotient
 
-    # Quadruple 12: (@, 0x1004, None, t5)  # Load global 'b'
-    lw $t5, var_b
+    # Quadruple 10: (=, t0, None, 0x1018)
+    sw $t2, var_quot
 
-    # Quadruple 13: (*, t4, t5, t6)
-    mul $t6, $t4, $t5
+    # Quadruple 11: (%, 0x1000, 0x1004, t0)
+    lw $t0, var_a
+    lw $t1, var_b
+    div $t0, $t1
+    mfhi $t2  # Get remainder (modulo)
 
-    # Quadruple 14: (=, t6, None, 0x1014)
-    sw $t6, var_prod
+    # Quadruple 12: (=, t0, None, 0x101C)
+    sw $t2, var_mod
 
-    # Quadruple 15: (@, 0x1000, None, t6)  # Load global 'a'
-    lw $t6, var_a
+    # Quadruple 13: (NEG, 0x1004, None, t0)
+    lw $t1, var_b
+    sub $t2, $zero, $t1
 
-    # Quadruple 16: (@, 0x1004, None, t7)  # Load global 'b'
-    lw $t7, var_b
+    # Quadruple 14: (=, t0, None, 0x1020)
+    sw $t2, var_neg
 
-    # Quadruple 17: (/, t6, t7, t8)
-    div $t6, $t7
-    mflo $t8  # quotient
+    # Quadruple 15: (>, 0x1000, 0x1004, t0)
+    lw $t0, var_a
+    lw $t1, var_b
+    slt $t2, $t1, $t0
 
-    # Quadruple 18: (=, t8, None, 0x1018)
-    sw $t8, var_quot
+    # Quadruple 16: (=, t0, None, 0x1024)
+    sw $t2, var_is_greater
 
-    # Quadruple 19: (@, 0x1000, None, t8)  # Load global 'a'
-    lw $t8, var_a
+    # Quadruple 17: (==, 0x1000, 0x1004, t0)
+    lw $t0, var_a
+    lw $t1, var_b
+    xor $t2, $t0, $t1
+    sltiu $t2, $t2, 1
 
-    # Quadruple 20: (@, 0x1004, None, t9)  # Load global 'b'
-    lw $t9, var_b
+    # Quadruple 18: (=, t0, None, 0x1028)
+    sw $t2, var_is_equal
 
-    # Quadruple 21: (%, t8, t9, t10)
-    div $t8, $t9
-    mfhi $s0  # Get remainder (modulo)
+    # Quadruple 19: (<=, 0x1000, 0x1004, t0)
+    lw $t0, var_a
+    lw $t1, var_b
+    slt $t0, $t1, $t0
+    xori $t2, $t0, 1
 
-    # Quadruple 22: (=, t10, None, 0x101C)
-    sw $s0, var_mod
+    # Quadruple 20: (=, t0, None, 0x102C)
+    sw $t2, var_is_less_eq
 
-    # Quadruple 23: (@, 0x1004, None, t10)  # Load global 'b'
-    lw $s0, var_b
+    # Quadruple 21: (>, 0x1000, 0x1004, t0)
+    lw $t0, var_a
+    lw $t1, var_b
+    slt $t2, $t1, $t0
 
-    # Quadruple 24: (NEG, t10, None, t11)
-    sub $s1, $zero, $s0
+    # Quadruple 22: (if, t0, None, L0)
+    bne $t2, $zero, L0
 
-    # Quadruple 25: (=, t11, None, 0x1020)
-    sw $s1, var_neg
-
-    # Quadruple 26: (@, 0x1000, None, t11)  # Load global 'a'
-    lw $s1, var_a
-
-    # Quadruple 27: (@, 0x1004, None, t12)  # Load global 'b'
-    lw $s2, var_b
-
-    # Quadruple 28: (>, t11, t12, t13)
-    slt $s3, $s2, $s1
-
-    # Quadruple 29: (=, t13, None, 0x1024)
-    sw $s3, var_is_greater
-
-    # Quadruple 30: (@, 0x1000, None, t13)  # Load global 'a'
-    lw $s3, var_a
-
-    # Quadruple 31: (@, 0x1004, None, t14)  # Load global 'b'
-    lw $s4, var_b
-
-    # Quadruple 32: (==, t13, t14, t15)
-    xor $s5, $s3, $s4
-    sltiu $s5, $s5, 1
-
-    # Quadruple 33: (=, t15, None, 0x1028)
-    sw $s5, var_is_equal
-
-    # Quadruple 34: (@, 0x1000, None, t15)  # Load global 'a'
-    lw $s5, var_a
-
-    # Quadruple 35: (@, 0x1004, None, t16)  # Load global 'b'
-    lw $s6, var_b
-
-    # Quadruple 36: (<=, t15, t16, t17)
-    slt $t0, $s6, $s5
-    xori $s7, $t0, 1
-
-    # Quadruple 37: (=, t17, None, 0x102C)
-    sw $s7, var_is_less_eq
-
-    # Quadruple 38: (@, 0x1000, None, t17)  # Load global 'a'
-    lw $s7, var_a
-
-    # Quadruple 39: (@, 0x1004, None, t18)  # Load global 'b'
-    lw $a0, var_b
-
-    # Quadruple 40: (>, t17, t18, t19)
-    slt $a1, $a0, $s7
-
-    # Quadruple 41: (if, t19, None, L0)
-    bne $a1, $zero, L0
-
-    # Quadruple 42: (goto, None, None, L1)
+    # Quadruple 23: (goto, None, None, L1)
     j L1
 
-    # Quadruple 43: (label, None, None, L0)
+    # Quadruple 24: (label, None, None, L0)
     L0:
 
-    # Quadruple 44: (@, 0x1000, None, t20)  # Load global 'a'
-    lw $a2, var_a
+    # Quadruple 25: (=, 0x1000, None, 0x1008)
+    lw $t0, var_a
+    sw $t0, var_result
 
-    # Quadruple 45: (=, t20, None, 0x1008)
-    sw $a2, var_result
-
-    # Quadruple 46: (goto, None, None, L2)
+    # Quadruple 26: (goto, None, None, L2)
     j L2
 
-    # Quadruple 47: (label, None, None, L1)
+    # Quadruple 27: (label, None, None, L1)
     L1:
 
-    # Quadruple 48: (@, 0x1004, None, t21)  # Load global 'b'
-    lw $a3, var_b
+    # Quadruple 28: (=, 0x1004, None, 0x1008)
+    lw $t0, var_b
+    sw $t0, var_result
 
-    # Quadruple 49: (=, t21, None, 0x1008)
-    sw $a3, var_result
-
-    # Quadruple 50: (label, None, None, L2)
+    # Quadruple 29: (label, None, None, L2)
     L2:
 
-    # Quadruple 51: (@, 0x1000, None, t22)  # Load global 'a'
+    # Quadruple 30: (+, 0x1000, 0x1004, t1)
     lw $t0, var_a
-
-    # Quadruple 52: (@, 0x1004, None, t23)  # Load global 'b'
     lw $t1, var_b
+    add $t3, $t0, $t1
 
-    # Quadruple 53: (+, t22, t23, t24)
-    add $t2, $t0, $t1
-
-    # Quadruple 54: (*, t24, 2, t25)
+    # Quadruple 31: (*, t1, 2, t2)
     li $t0, 2
-    mul $t3, $t2, $t0
+    mul $t4, $t3, $t0
 
-    # Quadruple 55: (@, 0x101C, None, t26)  # Load global 'mod'
-    lw $t4, var_mod
+    # Quadruple 32: (-, t2, 0x101C, t3)
+    lw $t5, var_mod
+    sub $t6, $t4, $t5
 
-    # Quadruple 56: (-, t25, t26, t27)
-    sub $t5, $t3, $t4
-
-    # Quadruple 57: (=, t27, None, 0x1030)
-    sw $t5, var_complex
+    # Quadruple 33: (=, t3, None, 0x1030)
+    sw $t6, var_complex
 
     # Main epilogue
     lw $ra, 0($sp)

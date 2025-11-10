@@ -57,7 +57,8 @@ class CodeGenerator:
 
     def mark_temp_reusable(self, temp):
         """Marca un temporal como reusable"""
-        if (temp and temp.startswith('t') and 
+        if (temp and isinstance(temp, str) and
+            temp.startswith('t') and len(temp) > 1 and temp[1:].isdigit() and
             temp not in self.used_temps_in_expr):
             self.reusable_temps.add(temp)
 
@@ -279,7 +280,8 @@ class CodeGenerator:
 
     def generate_load_variable(self, var_name, ctx=None):
         """
-        Genera código para cargar una variable.
+        OPTIMIZADO: Retorna dirección directamente en contextos simples,
+        evitando operaciones @ innecesarias.
         Prioridad: Parámetro > Local > Global
         """
         # 1. Verificar si es un parámetro de la función actual
@@ -287,26 +289,17 @@ class CodeGenerator:
         if function_context:
             ar_design = function_context['ar_design']
             offset = ar_design.get_offset(var_name)
-            
+
             if offset is not None:
-                # Es un parámetro o local - cargar desde FP[offset]
-                temp = self.new_temp()
-                self.emit_quad('@', f"FP[{offset}]", None, temp,
-                            comment=f"Load param/local '{var_name}'")
-                self.current_temp = temp
-                self.mark_temp_used(temp)
-                self.last_assigned_temp = temp
-                return temp
-        
-        # 2. Fallback: variable global
+                # Es un parámetro o local - retornar dirección FP[offset]
+                address = f"FP[{offset}]"
+                self.current_temp = address
+                return address
+
+        # 2. Variable global - retornar dirección directamente
         address = self.get_variable_address(var_name)
-        temp = self.new_temp()
-        self.emit_quad('@', address, None, temp,
-                    comment=f"Load global '{var_name}'")
-        self.current_temp = temp
-        self.mark_temp_used(temp)
-        self.last_assigned_temp = temp
-        return temp
+        self.current_temp = address
+        return address
 
     def generate_address_of_variable(self, var_name, ctx=None):
         """
@@ -925,14 +918,10 @@ class CodeGenerator:
         Genera código para NOT lógico optimizado
         """
         self.mark_temp_used(operand_temp)
-        
-        # Intentar reutilizar temporal
-        if (self.last_assigned_temp and 
-            self.last_assigned_temp not in self.used_temps_in_expr):
-            result_temp = self.last_assigned_temp
-        else:
-            result_temp = self.new_temp()
-            
+
+        # NOT siempre necesita nuevo temporal para el resultado
+        result_temp = self.new_temp()
+
         self.emit_quad('!', operand_temp, None, result_temp)
         self.current_temp = result_temp
         self.last_assigned_temp = result_temp

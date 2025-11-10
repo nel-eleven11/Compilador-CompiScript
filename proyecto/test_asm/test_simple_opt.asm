@@ -5,6 +5,7 @@
 .data
 var_a: .word 0  # Address: 0x1000
 var_b: .word 0  # Address: 0x1004
+var_c: .word 0  # Address: 0x1008
 
 
 .text
@@ -15,16 +16,21 @@ main:
     addiu $sp, $sp, -4
     sw $ra, 0($sp)
 
-    # Quadruple 0: (=, true, None, 0x1000)
-    li $t0, 1
+    # Quadruple 0: (=, 10, None, 0x1000)
+    li $t0, 10
     sw $t0, var_a
 
-    # Quadruple 1: (!, 0x1000, None, t0)
-    lw $t0, var_a
-    sltiu $t1, $t0, 1
+    # Quadruple 1: (=, 5, None, 0x1004)
+    li $t0, 5
+    sw $t0, var_b
 
-    # Quadruple 2: (=, t0, None, 0x1004)
-    sw $t1, var_b
+    # Quadruple 2: (+, 0x1000, 0x1004, t0)
+    lw $t0, var_a
+    lw $t1, var_b
+    add $t2, $t0, $t1
+
+    # Quadruple 3: (=, t0, None, 0x1008)
+    sw $t2, var_c
 
     # Main epilogue
     lw $ra, 0($sp)
