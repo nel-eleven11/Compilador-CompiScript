@@ -255,7 +255,7 @@ python main2.py test_cps/mi_programa.cps
    - `test_simple_opt.cps`: 6 → 4 cuádruplos (33% reducción)
    - `test_complete_basic.cps`: 58 → 34 cuádruplos (41% reducción)
 
-### ⏳ En Progreso / Pendiente
+### En Progreso / Pendiente
 
 1. **Optimización de Código Intermedio Adicional**
    - Reutilización más agresiva de temporales
