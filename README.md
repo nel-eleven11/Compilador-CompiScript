@@ -98,7 +98,7 @@ Código Fuente (.cps)
 
 ## Generación de Código MIPS
 
-### ✅ Operaciones Implementadas
+### Operaciones Implementadas
 
 #### 1. Operaciones Aritméticas
 - Suma (`+`) → `add`
@@ -135,7 +135,7 @@ Código Fuente (.cps)
 - Variables globales → sección `.data`
 - Valores booleanos (`true`/`false`) → `1`/`0`
 
-### 📝 Ejemplo de Uso
+### Ejemplo de Uso
 
 ```bash
 # 1. Crear un archivo de prueba
@@ -160,14 +160,14 @@ python main2.py test_cps/mi_programa.cps
 # 4. Abrir en MARS y ejecutar
 ```
 
-### 🧪 Archivos de Prueba Disponibles
+### Archivos de Prueba Disponibles
 
 - `test_cps/test_control_flow.cps` - Control de flujo (if/else)
 - `test_cps/test_comparisons.cps` - Todas las comparaciones
 - `test_cps/test_logical_unary.cps` - Operaciones lógicas, unarias y módulo
 - `test_cps/test_complete_basic.cps` - TODAS las operaciones básicas combinadas
 
-### 🔧 Componentes del Generador MIPS
+###  Componentes del Generador MIPS
 
 #### MIPSGenerator (`mips_generator.py`)
 - **Propósito**: Coordina la traducción de cuádruplos TAC a instrucciones MIPS
@@ -209,7 +209,7 @@ python main2.py test_cps/mi_programa.cps
 
 ## Estado del Proyecto
 
-### ✅ Completado
+### Completado
 
 1. **Análisis Léxico y Sintáctico** (ANTLR)
 2. **Análisis Semántico** (SemanticVisitor)
@@ -227,11 +227,40 @@ python main2.py test_cps/mi_programa.cps
    - Asignación de registros
    - Manejo de variables globales
 
+### Optimizaciones Implementadas
+
+1. **Optimización de Cargas de Variables**
+   - **Antes**: Generaba cuádruplos `@` (load) para cada acceso a variable
+   - **Ahora**: Pasa direcciones de memoria directamente a operaciones
+   - **Reducción**: 33-41% menos cuádruplos en código típico
+
+   **Ejemplo**:
+   ```
+   ANTES (6 cuádruplos):
+   0: (=, 10, None, 0x1000)      # a = 10
+   1: (=, 5, None, 0x1004)       # b = 5
+   2: (@, 0x1000, None, t0)      # Load a
+   3: (@, 0x1004, None, t1)      # Load b
+   4: (+, t0, t1, t2)            # t2 = t0 + t1
+   5: (=, t2, None, 0x1008)      # c = t2
+
+   AHORA (4 cuádruplos):
+   0: (=, 10, None, 0x1000)      # a = 10
+   1: (=, 5, None, 0x1004)       # b = 5
+   2: (+, 0x1000, 0x1004, t0)    # Operación directa con direcciones
+   3: (=, t0, None, 0x1008)      # c = t0
+   ```
+
+   **Impacto medido**:
+   - `test_simple_opt.cps`: 6 → 4 cuádruplos (33% reducción)
+   - `test_complete_basic.cps`: 58 → 34 cuádruplos (41% reducción)
+
 ### ⏳ En Progreso / Pendiente
 
-1. **Optimización de Código Intermedio**
-   - Reducir número de temporales generados
-   - Optimización de cuádruplos redundantes
+1. **Optimización de Código Intermedio Adicional**
+   - Reutilización más agresiva de temporales
+   - Eliminación de código muerto
+   - Propagación de constantes
 
 2. **Funciones y Llamadas (Etapa 2)**
    - Traducción de cuádruplos `call`, `param`, `return`
@@ -322,36 +351,3 @@ Cualquier valor `!= 0` se considera verdadero en condicionales.
 - `_is_temporary()` NO trata `true`/`false` como temporales
 - `_normalize_value()` convierte `true` → `1`, `false` → `0`
 - `_load_value_to_reg()` aplica normalización automáticamente
-
----
-
-## Roadmap
-
-### Fase Actual: Operaciones Básicas ✅
-- [x] Aritmética completa
-- [x] Comparaciones
-- [x] Operaciones lógicas
-- [x] Control de flujo básico
-- [x] Variables globales
-
-### Próxima Fase: Funciones
-- [ ] Prólogo/epílogo de funciones
-- [ ] Paso de parámetros
-- [ ] Valores de retorno
-- [ ] Recursividad
-- [ ] Variables locales
-
-### Fase Final: Features Avanzadas
-- [ ] Clases y objetos
-- [ ] Arrays dinámicos
-- [ ] Strings
-- [ ] Optimizaciones avanzadas
-
----
-
-## Referencias
-
-- **ANTLR**: https://www.antlr.org/
-- **MARS MIPS Simulator**: http://courses.missouristate.edu/kenvollmar/mars/
-- **MIPS Reference**: https://www.cs.cornell.edu/courses/cs3410/2019sp/schedule/slides/10-mips-r.pdf
-- **Diseño de Compiladores** (Dragon Book): Aho, Sethi, Ullman
