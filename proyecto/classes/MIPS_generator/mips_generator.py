@@ -113,6 +113,18 @@ class MIPSGenerator:
         elif op in ['<', '>', '<=', '>=', '==', '!=']:
             return self._translate_comparison_quad(quad)
 
+        # Operaciones lógicas
+        elif op in ['&&', '||', '!']:
+            return self._translate_logical_quad(quad)
+
+        # Operaciones unarias
+        elif op in ['-', 'NEG'] and quad.arg2 is None:
+            return self._translate_unary_quad(quad)
+
+        # Operación de módulo
+        elif op == '%':
+            return self._translate_modulo_quad(quad)
+
         # Operaciones de salto
         elif op in ['goto', 'if', 'if_false', 'ifFalse']:
             return self._translate_jump_quad(quad)
@@ -197,16 +209,13 @@ class MIPSGenerator:
         # Obtener registro para el valor
         value_reg = self.register_allocator.get_reg_temp("assign_temp")
 
-        # Cargar el valor
+        # Cargar el valor usando el helper
         if self._is_temporary(value):
             # Si es temporal, obtener su registro
             value_reg = self.register_allocator.get_reg(value)
-        elif self._is_immediate(value):
-            instructions.append(f"li {value_reg}, {value}")
         else:
-            # Es una variable, cargar desde memoria
-            addr = self._get_memory_label(value)
-            instructions.append(f"lw {value_reg}, {addr}")
+            # Usar helper para cargar inmediato o variable
+            self._load_value_to_reg(value, value_reg, instructions)
 
         # Guardar en el target
         if self._is_temporary(target):
@@ -317,6 +326,191 @@ class MIPSGenerator:
 
         return instructions
 
+    def _translate_logical_quad(self, quad):
+        """
+        Traduce operaciones lógicas: &&, ||, !
+
+        Para operaciones lógicas simples (sin cortocircuito en cuádruplos):
+        - && : AND bit a bit
+        - || : OR bit a bit
+        - ! : NOT lógico (invertir booleano)
+
+        Nota: Si el código intermedio ya maneja cortocircuito con labels,
+        esas operaciones se traducen como comparaciones + saltos.
+        """
+        instructions = []
+
+        if quad.op == '!':
+            # NOT lógico: (!, operand, None, result)
+            # En MIPS: xori result, operand, 1 (invertir bit)
+            # O también: seq result, operand, $zero (result = operand == 0)
+
+            operand = quad.arg1
+            result = quad.result
+
+            # Obtener registros
+            operand_reg = self.register_allocator.get_reg(operand)
+            result_reg = self.register_allocator.get_reg(result)
+
+            # Cargar operando usando helper
+            if not self._is_temporary(operand):
+                self._load_value_to_reg(operand, operand_reg, instructions)
+
+            # NOT lógico: result = (operand == 0) ? 1 : 0
+            instructions.append(f"sltiu {result_reg}, {operand_reg}, 1")
+
+        elif quad.op == '&&':
+            # AND lógico: (&&, arg1, arg2, result)
+            # Nota: Si hay cortocircuito, esto se traduce con labels
+            # Aquí implementamos AND simple bit a bit
+
+            arg1 = quad.arg1
+            arg2 = quad.arg2
+            result = quad.result
+
+            # Obtener registros
+            arg1_reg = self.register_allocator.get_reg(arg1)
+            arg2_reg = self.register_allocator.get_reg(arg2)
+            result_reg = self.register_allocator.get_reg(result)
+
+            # Cargar arg1
+            if self._is_temporary(arg1):
+                pass
+            elif self._is_immediate(arg1):
+                instructions.append(f"li {arg1_reg}, {arg1}")
+            else:
+                addr = self._get_memory_label(arg1)
+                instructions.append(f"lw {arg1_reg}, {addr}")
+
+            # Cargar arg2
+            if self._is_temporary(arg2):
+                pass
+            elif self._is_immediate(arg2):
+                instructions.append(f"li {arg2_reg}, {arg2}")
+            else:
+                addr = self._get_memory_label(arg2)
+                instructions.append(f"lw {arg2_reg}, {addr}")
+
+            # AND bit a bit
+            instructions.append(f"and {result_reg}, {arg1_reg}, {arg2_reg}")
+            # Normalizar a booleano (0 o 1)
+            instructions.append(f"sltu {result_reg}, $zero, {result_reg}")
+
+        elif quad.op == '||':
+            # OR lógico: (||, arg1, arg2, result)
+
+            arg1 = quad.arg1
+            arg2 = quad.arg2
+            result = quad.result
+
+            # Obtener registros
+            arg1_reg = self.register_allocator.get_reg(arg1)
+            arg2_reg = self.register_allocator.get_reg(arg2)
+            result_reg = self.register_allocator.get_reg(result)
+
+            # Cargar arg1
+            if self._is_temporary(arg1):
+                pass
+            elif self._is_immediate(arg1):
+                instructions.append(f"li {arg1_reg}, {arg1}")
+            else:
+                addr = self._get_memory_label(arg1)
+                instructions.append(f"lw {arg1_reg}, {addr}")
+
+            # Cargar arg2
+            if self._is_temporary(arg2):
+                pass
+            elif self._is_immediate(arg2):
+                instructions.append(f"li {arg2_reg}, {arg2}")
+            else:
+                addr = self._get_memory_label(arg2)
+                instructions.append(f"lw {arg2_reg}, {addr}")
+
+            # OR bit a bit
+            instructions.append(f"or {result_reg}, {arg1_reg}, {arg2_reg}")
+            # Normalizar a booleano (0 o 1)
+            instructions.append(f"sltu {result_reg}, $zero, {result_reg}")
+
+        return instructions
+
+    def _translate_unary_quad(self, quad):
+        """
+        Traduce operaciones unarias
+
+        Principalmente la negación aritmética: -x
+        Cuádruplo: (-, operand, None, result) o (NEG, operand, None, result)
+        """
+        instructions = []
+
+        if quad.op in ['-', 'NEG']:
+            # Negación aritmética: (-, operand, None, result)
+            # En MIPS: sub result, $zero, operand
+            # O también: neg result, operand (pseudo-instrucción)
+
+            operand = quad.arg1
+            result = quad.result
+
+            # Obtener registros
+            operand_reg = self.register_allocator.get_reg(operand)
+            result_reg = self.register_allocator.get_reg(result)
+
+            # Cargar operando si es necesario
+            if self._is_temporary(operand):
+                pass
+            elif self._is_immediate(operand):
+                instructions.append(f"li {operand_reg}, {operand}")
+            else:
+                addr = self._get_memory_label(operand)
+                instructions.append(f"lw {operand_reg}, {addr}")
+
+            # Negar: result = 0 - operand
+            instructions.append(f"sub {result_reg}, $zero, {operand_reg}")
+
+        return instructions
+
+    def _translate_modulo_quad(self, quad):
+        """
+        Traduce operación de módulo: (%, arg1, arg2, result)
+
+        En MIPS:
+        - div arg1, arg2  (divide arg1 / arg2)
+        - mfhi result     (obtener resto/módulo)
+        """
+        instructions = []
+
+        arg1 = quad.arg1
+        arg2 = quad.arg2
+        result = quad.result
+
+        # Obtener registros
+        arg1_reg = self.register_allocator.get_reg(arg1)
+        arg2_reg = self.register_allocator.get_reg(arg2)
+        result_reg = self.register_allocator.get_reg(result)
+
+        # Cargar arg1
+        if self._is_temporary(arg1):
+            pass
+        elif self._is_immediate(arg1):
+            instructions.append(f"li {arg1_reg}, {arg1}")
+        else:
+            addr = self._get_memory_label(arg1)
+            instructions.append(f"lw {arg1_reg}, {addr}")
+
+        # Cargar arg2
+        if self._is_temporary(arg2):
+            pass
+        elif self._is_immediate(arg2):
+            instructions.append(f"li {arg2_reg}, {arg2}")
+        else:
+            addr = self._get_memory_label(arg2)
+            instructions.append(f"lw {arg2_reg}, {addr}")
+
+        # División y obtener resto
+        instructions.append(f"div {arg1_reg}, {arg2_reg}")
+        instructions.append(f"mfhi {result_reg}  # Get remainder (modulo)")
+
+        return instructions
+
     def _translate_jump_quad(self, quad):
         """
         Traduce cuádruplos de salto y control de flujo
@@ -394,20 +588,77 @@ class MIPSGenerator:
         return [f"# TODO: Translate function operation '{quad.op}'"]
 
     def _is_temporary(self, value):
-        """Verifica si un valor es un temporal (t0, t1, etc.)"""
-        return isinstance(value, str) and value.startswith('t') and value[1:].isdigit()
+        """
+        Verifica si un valor es un temporal (t0, t1, etc.)
+
+        NOTA: Debido a un bug en el código intermedio, a veces 'true' o 'false'
+        se usan como nombres de temporales. Por ahora, NO los consideramos temporales
+        para forzar su conversión a valores numéricos.
+        """
+        if not isinstance(value, str):
+            return False
+
+        # No tratar 'true' o 'false' como temporales, incluso si el código intermedio los usa así
+        if value in ['true', 'false']:
+            return False
+
+        return value.startswith('t') and value[1:].isdigit()
 
     def _is_immediate(self, value):
-        """Verifica si un valor es un inmediato (número)"""
+        """Verifica si un valor es un inmediato (número o booleano)"""
         if isinstance(value, (int, float)):
             return True
         if isinstance(value, str):
+            # Verificar si es un booleano literal
+            if value in ['true', 'false']:
+                return True
             try:
                 int(value)
                 return True
             except ValueError:
                 return False
         return False
+
+    def _normalize_value(self, value):
+        """
+        Normaliza un valor, convirtiendo booleanos literales a números
+
+        Args:
+            value: El valor a normalizar (puede ser 'true', 'false', número, etc.)
+
+        Returns:
+            El valor normalizado (true -> 1, false -> 0, otros sin cambio)
+        """
+        if isinstance(value, str):
+            if value == 'true':
+                return '1'
+            elif value == 'false':
+                return '0'
+        return value
+
+    def _load_value_to_reg(self, value, reg, instructions):
+        """
+        Helper para cargar un valor en un registro, manejando temporales, inmediatos y variables
+
+        Args:
+            value: El valor a cargar (puede ser temporal, inmediato, variable, etc.)
+            reg: El registro destino
+            instructions: Lista de instrucciones donde agregar el código
+
+        Returns:
+            None (modifica instructions in-place)
+        """
+        if self._is_temporary(value):
+            # Si es temporal, ya está en registro (no hacer nada)
+            pass
+        elif self._is_immediate(value):
+            # Es un inmediato (número o booleano)
+            normalized = self._normalize_value(value)
+            instructions.append(f"li {reg}, {normalized}")
+        else:
+            # Es una variable, cargar desde memoria
+            addr = self._get_memory_label(value)
+            instructions.append(f"lw {reg}, {addr}")
 
     def _get_memory_label(self, identifier):
         """
