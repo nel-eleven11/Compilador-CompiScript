@@ -162,10 +162,17 @@ python main2.py test_cps/mi_programa.cps
 
 ### Archivos de Prueba Disponibles
 
+**Operaciones Básicas:**
 - `test_cps/test_control_flow.cps` - Control de flujo (if/else)
 - `test_cps/test_comparisons.cps` - Todas las comparaciones
 - `test_cps/test_logical_unary.cps` - Operaciones lógicas, unarias y módulo
 - `test_cps/test_complete_basic.cps` - TODAS las operaciones básicas combinadas
+
+**Funciones (Etapa 2):**
+- `test_cps/test_method_call.cps` - Llamada a método simple (2 parámetros)
+- `test_cps/test_recursive_method.cps` - Factorial recursivo (prueba de recursividad)
+
+**Nota**: Ver `ETAPA2_SUMMARY.md` para detalles completos de la implementación de funciones.
 
 ###  Componentes del Generador MIPS
 
@@ -226,6 +233,14 @@ python main2.py test_cps/mi_programa.cps
    - Control de flujo
    - Asignación de registros
    - Manejo de variables globales
+5. **Funciones y Llamadas** (Etapa 2) ✅ **COMPLETADO**
+   - Traducción completa de cuádruplos `enter`, `leave`, `push`, `call`, `pop`, `return`
+   - Implementación de stack frames con FP (frame pointer)
+   - Manejo de argumentos vía stack
+   - Manejo de valores de retorno en `$v0`
+   - Soporte completo para recursividad
+   - FP-relative addressing para parámetros y locales
+   - Limpieza automática de stack después de llamadas
 
 ### Optimizaciones Implementadas
 
@@ -262,13 +277,7 @@ python main2.py test_cps/mi_programa.cps
    - Eliminación de código muerto
    - Propagación de constantes
 
-2. **Funciones y Llamadas (Etapa 2)**
-   - Traducción de cuádruplos `call`, `param`, `return`
-   - Implementación completa de stack frames
-   - Manejo de argumentos y valores de retorno
-   - Soporte para recursividad
-
-3. **Clases y Objetos (Etapa 3)**
+2. **Clases y Objetos (Etapa 3)**
    - Acceso a atributos de objetos
    - Llamadas a métodos
    - Herencia

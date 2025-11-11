@@ -27,6 +27,10 @@ class MIPSGenerator:
         self.data_section = []
         self.text_section = []
 
+        # Contexto de función actual durante la traducción
+        self.current_function = None
+        self.param_registers = []  # Para rastrear argumentos durante llamadas
+
     def generate_mips_code(self):
         """Genera código MIPS completo desde los cuádruplos"""
         # 1. Sección de datos (variables globales)
@@ -61,20 +65,60 @@ class MIPSGenerator:
         self.text_section.append(".text")
         self.text_section.append(".globl main")
         self.text_section.append("")
-        self.text_section.append("main:")
 
-        # Prólogo del main
+        # CRITICAL: Jump to main at the start to skip function definitions
+        self.text_section.append("j main")
+        self.text_section.append("")
+
+        # Separate function quadruples from main quadruples
+        function_quads = []
+        main_quads = []
+        current_function = None
+        in_function = False
+
+        for idx, quad in enumerate(self.cg.quadruples):
+            # Check if this is a function label (starts with FUNC_)
+            if quad.op == 'label' and isinstance(quad.result, str) and quad.result.startswith('FUNC_'):
+                in_function = True
+                current_function = []
+                function_quads.append((idx, current_function))
+
+            if in_function:
+                current_function.append((idx, quad))
+                # Check if function ends with 'leave'
+                if quad.op == 'leave':
+                    in_function = False
+                    current_function = None
+            else:
+                main_quads.append((idx, quad))
+
+        # Generate all functions first
+        for func_idx, func_quads in function_quads:
+            for idx, quad in func_quads:
+                self.text_section.append(f"# Quadruple {idx}: {quad}")
+                instructions = self._translate_quadruple(quad)
+                for instruction in instructions:
+                    if instruction.strip():
+                        # Function labels should not be indented
+                        if instruction.strip().endswith(':') and not instruction.strip().startswith('L'):
+                            self.text_section.append(instruction.strip())
+                        else:
+                            self.text_section.append(f"    {instruction}")
+                self.text_section.append("")
+
+        # Generate main section
+        self.text_section.append("main:")
         self.text_section.append("    # Main prologue")
         self.text_section.append("    addiu $sp, $sp, -4")
         self.text_section.append("    sw $ra, 0($sp)")
         self.text_section.append("")
 
-        # Traducir cada cuádruplo
-        for idx, quad in enumerate(self.cg.quadruples):
+        # Traducir cuádruplos del main
+        for idx, quad in main_quads:
             self.text_section.append(f"    # Quadruple {idx}: {quad}")
             instructions = self._translate_quadruple(quad)
             for instruction in instructions:
-                if instruction.strip():  # Solo agregar líneas no vacías
+                if instruction.strip():
                     self.text_section.append(f"    {instruction}")
             self.text_section.append("")
 
@@ -97,8 +141,17 @@ class MIPSGenerator:
         """
         op = quad.op
 
-        # Operaciones aritméticas
-        if op in ['+', '-', '*', '/']:
+        # Operaciones aritméticas (including special stack operations)
+        if op == '+' or op == 'add':
+            # Check if this is stack cleanup: (add, SP, size, SP)
+            if (quad.arg1 == 'SP' or str(quad.arg1).upper() == 'SP') and (quad.result == 'SP' or str(quad.result).upper() == 'SP'):
+                return self._translate_function_quad(quad)
+            elif op == '+':
+                return self._translate_arithmetic_quad(quad)
+            else:
+                # 'add' without SP is still a function-related operation
+                return self._translate_function_quad(quad)
+        elif op in ['-', '*', '/']:
             return self._translate_arithmetic_quad(quad)
 
         # Operaciones de asignación
@@ -130,7 +183,7 @@ class MIPSGenerator:
             return self._translate_jump_quad(quad)
 
         # Operaciones de función
-        elif op in ['call', 'param', 'return']:
+        elif op in ['call', 'param', 'return', 'enter', 'leave', 'push', 'pop']:
             return self._translate_function_quad(quad)
 
         # Operación de etiqueta
@@ -168,6 +221,10 @@ class MIPSGenerator:
         if self._is_temporary(quad.arg1):
             # Si es temporal, ya debería estar en registro
             pass
+        elif self._is_fp_relative(quad.arg1):
+            # FP-relative addressing: FP[offset]
+            offset = self._extract_fp_offset(quad.arg1)
+            instructions.append(f"lw {arg1_reg}, {offset}($fp)  # Load from frame")
         elif self._is_immediate(quad.arg1):
             instructions.append(f"li {arg1_reg}, {quad.arg1}")
         else:
@@ -179,6 +236,10 @@ class MIPSGenerator:
         if self._is_temporary(quad.arg2):
             # Si es temporal, ya debería estar en registro
             pass
+        elif self._is_fp_relative(quad.arg2):
+            # FP-relative addressing: FP[offset]
+            offset = self._extract_fp_offset(quad.arg2)
+            instructions.append(f"lw {arg2_reg}, {offset}($fp)  # Load from frame")
         elif self._is_immediate(quad.arg2):
             instructions.append(f"li {arg2_reg}, {quad.arg2}")
         else:
@@ -233,7 +294,9 @@ class MIPSGenerator:
     def _translate_load_quad(self, quad):
         """
         Traduce cuádruplos de carga: (@, addr, None, temp)
-        Ejemplo: (@, 0x1000, None, t0) -> lw $t0, var_a
+        Ejemplos:
+        - (@, 0x1000, None, t0) -> lw $t0, var_a
+        - (@, FP[8], None, t0) -> lw $t0, 8($fp)  # Parameter/local access
         """
         instructions = []
 
@@ -243,9 +306,16 @@ class MIPSGenerator:
         # Obtener registro para el temporal
         target_reg = self.register_allocator.get_reg(target_temp)
 
-        # Cargar desde memoria
-        source_addr = self._get_memory_label(addr)
-        instructions.append(f"lw {target_reg}, {source_addr}")
+        # Check if this is FP-relative addressing (parameters/locals)
+        if isinstance(addr, str) and addr.startswith('FP[') and addr.endswith(']'):
+            # Extract offset from FP[offset]
+            offset_str = addr[3:-1]  # Remove "FP[" and "]"
+            offset = offset_str
+            instructions.append(f"lw {target_reg}, {offset}($fp)  # Load from frame")
+        else:
+            # Regular memory load
+            source_addr = self._get_memory_label(addr)
+            instructions.append(f"lw {target_reg}, {source_addr}")
 
         return instructions
 
@@ -271,6 +341,10 @@ class MIPSGenerator:
         if self._is_temporary(quad.arg1):
             # Si es temporal, ya debería estar en registro
             pass
+        elif self._is_fp_relative(quad.arg1):
+            # FP-relative addressing: FP[offset]
+            offset = self._extract_fp_offset(quad.arg1)
+            instructions.append(f"lw {arg1_reg}, {offset}($fp)  # Load from frame")
         elif self._is_immediate(quad.arg1):
             instructions.append(f"li {arg1_reg}, {quad.arg1}")
         else:
@@ -282,6 +356,10 @@ class MIPSGenerator:
         if self._is_temporary(quad.arg2):
             # Si es temporal, ya debería estar en registro
             pass
+        elif self._is_fp_relative(quad.arg2):
+            # FP-relative addressing: FP[offset]
+            offset = self._extract_fp_offset(quad.arg2)
+            instructions.append(f"lw {arg2_reg}, {offset}($fp)  # Load from frame")
         elif self._is_immediate(quad.arg2):
             instructions.append(f"li {arg2_reg}, {quad.arg2}")
         else:
@@ -524,14 +602,14 @@ class MIPSGenerator:
 
         if quad.op == 'goto':
             # Salto incondicional: (goto, None, None, label)
-            label = quad.result
+            label = self._sanitize_label(quad.result)
             instructions.append(f"j {label}")
 
         elif quad.op in ['if', 'if_true']:
             # Salto condicional si verdadero: (if, condition, None, label)
             # En MIPS: bne condition, $zero, label (branch if not equal to zero)
             condition = quad.arg1
-            label = quad.result
+            label = self._sanitize_label(quad.result)
 
             # Obtener registro de la condición
             cond_reg = self.register_allocator.get_reg(condition)
@@ -554,7 +632,7 @@ class MIPSGenerator:
             # Salto condicional si falso: (if_false, condition, None, label)
             # En MIPS: beq condition, $zero, label (branch if equal to zero)
             condition = quad.arg1
-            label = quad.result
+            label = self._sanitize_label(quad.result)
 
             # Obtener registro de la condición
             cond_reg = self.register_allocator.get_reg(condition)
@@ -580,12 +658,152 @@ class MIPSGenerator:
         Traduce cuádruplos de etiqueta: (label, None, None, L0)
         Simplemente genera la etiqueta en MIPS
         """
-        label_name = quad.result
+        label_name = self._sanitize_label(quad.result)
         return [f"{label_name}:"]
 
     def _translate_function_quad(self, quad):
-        """Traduce cuádruplos de función (por implementar)"""
-        return [f"# TODO: Translate function operation '{quad.op}'"]
+        """
+        Traduce cuádruplos de función: enter, call, push, pop, return, leave
+
+        Quadruples:
+        - (enter, size, None, None): Function prologue
+        - (push, arg, None, None): Push argument for call
+        - (call, None, None, func_label): Call function
+        - (pop, None, None, result): Get return value
+        - (return, value, None, None): Return from function
+        - (leave, None, None, None): Function epilogue
+        """
+        instructions = []
+
+        if quad.op == 'enter':
+            # Function prologue: setup stack frame
+            # On entry: $sp points to last pushed argument (first parameter)
+            # TAC convention: FP[0] = first param, FP[4] = second param, etc.
+            # So $fp must point to the first parameter location
+            #
+            # Stack layout after prologue:
+            # [arg2]
+            # [arg1]
+            # [arg0] ← $fp points here (FP[0])
+            # [$ra]  ← -4($fp)
+            # [$fp]  ← -8($fp)
+            # [locals] ← $sp points here
+
+            frame_size = int(quad.arg1) if quad.arg1 else 0
+
+            instructions.append(f"# Function prologue (locals: {frame_size} bytes)")
+
+            # Save $ra and $fp BELOW current $sp (which points to arg0)
+            instructions.append(f"sw $ra, -4($sp)")
+            instructions.append(f"sw $fp, -8($sp)")
+
+            # Set $fp to point to arg0 location (current $sp)
+            instructions.append(f"move $fp, $sp")
+
+            # Move $sp down past saved $ra/$fp and allocate locals
+            total_offset = 8 + frame_size
+            instructions.append(f"addiu $sp, $sp, -{total_offset}")
+
+        elif quad.op == 'leave':
+            # Function epilogue: cleanup stack frame
+            # Current state: $fp points to arg0, $sp points below locals
+            # Saved $fp is at -8($fp), saved $ra is at -4($fp)
+            instructions.append(f"# Function epilogue")
+
+            # Point $sp to saved $fp location
+            instructions.append(f"addiu $sp, $fp, -8")
+
+            # Restore $fp and $ra
+            instructions.append(f"lw $fp, 0($sp)")
+            instructions.append(f"lw $ra, 4($sp)")
+
+            # Pop $fp/$ra from stack (sp now points to arg0 location)
+            instructions.append(f"addiu $sp, $sp, 8")
+
+            # Return to caller (caller will clean up arguments)
+            instructions.append(f"jr $ra")
+
+        elif quad.op == 'push':
+            # Push argument onto stack for function call
+            # Arguments are pushed in reverse order
+            arg = quad.arg1
+
+            instructions.append(f"# Push argument: {arg}")
+
+            # Get register for argument
+            arg_reg = self.register_allocator.get_reg_temp("push_arg")
+
+            # Load argument value
+            if self._is_temporary(arg):
+                arg_reg = self.register_allocator.get_reg(arg)
+            else:
+                self._load_value_to_reg(arg, arg_reg, instructions)
+
+            # Push onto stack
+            instructions.append(f"addiu $sp, $sp, -4")
+            instructions.append(f"sw {arg_reg}, 0($sp)")
+
+            # Track for parameter passing to $a0-$a3 if needed
+            self.param_registers.append(arg_reg)
+
+        elif quad.op == 'call':
+            # Call function
+            func_label = self._sanitize_label(quad.result)
+
+            instructions.append(f"# Call function: {quad.result}")
+
+            # In MIPS calling convention, first 4 args go in $a0-$a3
+            # For simplicity, we're using stack-based passing (already pushed)
+            # But we could optimize by using $a0-$a3 for first 4 args
+
+            instructions.append(f"jal {func_label}")
+
+            # Clear param register tracking
+            self.param_registers.clear()
+
+        elif quad.op == 'pop':
+            # Pop return value from function call
+            # Return value is in $v0
+            result = quad.result
+
+            instructions.append(f"# Get return value")
+
+            if self._is_temporary(result):
+                result_reg = self.register_allocator.get_reg(result)
+                instructions.append(f"move {result_reg}, $v0")
+            else:
+                # Store return value to memory
+                result_addr = self._get_memory_label(result)
+                instructions.append(f"sw $v0, {result_addr}")
+
+        elif quad.op == 'return':
+            # Return from function with optional value
+            return_value = quad.arg1
+
+            instructions.append(f"# Return statement")
+
+            if return_value is not None:
+                # Load return value into $v0
+                if self._is_temporary(return_value):
+                    return_reg = self.register_allocator.get_reg(return_value)
+                    instructions.append(f"move $v0, {return_reg}")
+                else:
+                    # Load from memory or immediate
+                    temp_reg = self.register_allocator.get_reg_temp("return_temp")
+                    self._load_value_to_reg(return_value, temp_reg, instructions)
+                    instructions.append(f"move $v0, {temp_reg}")
+
+            # Jump to function epilogue (leave will handle cleanup)
+            # For now, we don't jump - leave quadruple follows immediately
+
+        elif quad.op == 'add' and (quad.arg1 == 'SP' or str(quad.arg1).upper() == 'SP'):
+            # Stack cleanup after function call: (add, SP, size, SP)
+            # This adjusts SP after popping arguments
+            cleanup_size = quad.arg2
+            instructions.append(f"# Clean up arguments from stack ({cleanup_size} bytes)")
+            instructions.append(f"addiu $sp, $sp, {cleanup_size}")
+
+        return instructions
 
     def _is_temporary(self, value):
         """
@@ -604,6 +822,35 @@ class MIPSGenerator:
 
         return value.startswith('t') and value[1:].isdigit()
 
+    def _is_fp_relative(self, value):
+        """
+        Verifica si un valor es una dirección relativa al frame pointer (FP[offset])
+        """
+        return isinstance(value, str) and value.startswith('FP[') and value.endswith(']')
+
+    def _extract_fp_offset(self, fp_address):
+        """
+        Extrae el offset de una dirección FP-relative
+        Ejemplo: "FP[8]" -> "8"
+        """
+        if self._is_fp_relative(fp_address):
+            return fp_address[3:-1]  # Remove "FP[" and "]"
+        return "0"
+
+    def _sanitize_label(self, label):
+        """
+        Sanitiza etiquetas para que sean válidas en MIPS
+        Convierte espacios y paréntesis a guiones bajos
+        Ejemplo: "FUNC_add (Calculator)" -> "FUNC_add_Calculator"
+        """
+        if not isinstance(label, str):
+            return str(label)
+        # Replace spaces with underscores
+        sanitized = label.replace(' ', '_')
+        # Remove parentheses
+        sanitized = sanitized.replace('(', '').replace(')', '')
+        return sanitized
+
     def _is_immediate(self, value):
         """Verifica si un valor es un inmediato (número o booleano)"""
         if isinstance(value, (int, float)):
@@ -613,7 +860,8 @@ class MIPSGenerator:
             if value in ['true', 'false']:
                 return True
             try:
-                int(value)
+                # Use base 0 to auto-detect hex (0x...), octal (0o...), etc.
+                int(value, 0)
                 return True
             except ValueError:
                 return False
@@ -651,6 +899,10 @@ class MIPSGenerator:
         if self._is_temporary(value):
             # Si es temporal, ya está en registro (no hacer nada)
             pass
+        elif self._is_fp_relative(value):
+            # FP-relative addressing: FP[offset]
+            offset = self._extract_fp_offset(value)
+            instructions.append(f"lw {reg}, {offset}($fp)  # Load from frame")
         elif self._is_immediate(value):
             # Es un inmediato (número o booleano)
             normalized = self._normalize_value(value)
