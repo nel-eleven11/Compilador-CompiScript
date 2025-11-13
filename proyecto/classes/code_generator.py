@@ -1201,3 +1201,47 @@ class CodeGenerator:
         """Etiqueta visible en TAC para un método de clase."""
         return f"FUNC_{method_name} ({class_name})"
 
+
+    def generate_switch_statement(self, switch_value_temp, cases, default_case, ctx=None):
+        """
+        Generate code for switch statement
+        Translates to a series of if-else comparisons
+        
+        Args:
+            switch_value_temp: Temporary holding the switch expression value
+            cases: List of (case_value_temp, case_ctx) tuples
+            default_case: Default case context or None
+            ctx: Parser context
+        """
+        end_label = self.new_label()
+        
+        # For each case, generate: if (switch_value == case_value) goto case_label; else goto next
+        for i, (case_value_temp, case_ctx) in enumerate(cases):
+            case_label = self.new_label()
+            next_label = self.new_label()
+            
+            # Compare switch value with case value
+            comp_temp = self.new_temp()
+            self.emit_quad('==', switch_value_temp, case_value_temp, comp_temp)
+            self.emit_quad('if_false', comp_temp, None, next_label)
+            
+            # Case body
+            self.emit_quad('label', None, None, case_label)
+            for stmt in case_ctx.statement():
+                self.current_visitor.visit(stmt)
+            
+            # Jump to end (no fallthrough)
+            self.emit_quad('goto', None, None, end_label)
+            
+            # Next case label
+            self.emit_quad('label', None, None, next_label)
+        
+        # Default case (if exists)
+        if default_case:
+            default_label = self.new_label()
+            self.emit_quad('label', None, None, default_label)
+            for stmt in default_case.statement():
+                self.current_visitor.visit(stmt)
+        
+        # End label
+        self.emit_quad('label', None, None, end_label)

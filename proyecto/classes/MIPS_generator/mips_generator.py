@@ -76,6 +76,10 @@ class MIPSGenerator:
                 string_content = string_content.replace('\\', '\\\\').replace('"', '\\"')
                 self.data_section.append(f'{label}: .asciiz "{string_content}"')
 
+        # Add string concatenation buffer
+        self.data_section.append("# String concatenation buffer")
+        self.data_section.append("string_concat_buffer: .space 256  # 256 byte buffer for string concat")
+
         self.data_section.append("")
 
     def _generate_text_section(self):
@@ -225,8 +229,14 @@ class MIPSGenerator:
         """
         Traduce cuádruplos aritméticos: (op, arg1, arg2, result)
         Ejemplo: (+, t0, t1, t2) -> add $t2, $t0, $t1
+
+        Special case: String concatenation when op is '+' and operands are strings
         """
         instructions = []
+
+        # Check if this is string concatenation (+ operator with string operands)
+        if quad.op == '+' and self._might_be_string_concat(quad.arg1, quad.arg2):
+            return self._translate_string_concat(quad)
 
         # Mapeo de operadores TAC a MIPS
         mips_ops = {
@@ -483,6 +493,8 @@ class MIPSGenerator:
         Traduce cuádruplos de comparación: (op, arg1, arg2, result)
         Ejemplo: (<, t0, t1, t2) -> slt $t2, $t0, $t1
 
+        Special case: String comparison for == and !=
+
         En MIPS, las comparaciones usan:
         - slt (set less than): result = 1 si arg1 < arg2, 0 si no
         - seq (set equal): result = 1 si arg1 == arg2, 0 si no
@@ -490,6 +502,10 @@ class MIPSGenerator:
         - Para <=, >, >= usamos combinaciones
         """
         instructions = []
+
+        # Check if this is string comparison (use stricter detection)
+        if quad.op in ['==', '!='] and self._might_be_string_comparison(quad.arg1, quad.arg2):
+            return self._translate_string_comparison(quad)
 
         # Obtener registros para los operandos
         # For arg1: use get_reg if it's a temporary, otherwise get a temp register
@@ -987,20 +1003,8 @@ class MIPSGenerator:
         value = quad.arg1
         addr = quad.result  # La dirección efectiva está en result, no en arg2
 
-        # Obtener el valor a almacenar
-        if self._is_temporary(value):
-            value_reg = self.register_allocator.get_reg(value)
-        elif self._is_immediate(value):
-            value_reg = self.register_allocator.get_reg_temp("value")
-            normalized = self._normalize_value(value)
-            instructions.append(f"li {value_reg}, {normalized}")
-        else:
-            # Cargar desde memoria
-            value_reg = self.register_allocator.get_reg_temp("value")
-            var_label = self._get_memory_label(value)
-            instructions.append(f"lw {value_reg}, {var_label}")
-
-        # Obtener la dirección destino
+        # IMPORTANT: Get address register FIRST to avoid conflicts
+        # Obtener la dirección destino PRIMERO
         if self._is_temporary(addr):
             addr_reg = self.register_allocator.get_reg(addr)
         elif self._is_fp_relative(addr):
@@ -1010,6 +1014,32 @@ class MIPSGenerator:
         else:
             addr_reg = self.register_allocator.get_reg_temp("addr")
             instructions.append(f"li {addr_reg}, {addr}")
+
+        # Obtener el valor a almacenar DESPUÉS (to avoid overwriting addr_reg)
+        if self._is_temporary(value):
+            value_reg = self.register_allocator.get_reg(value)
+        elif self._is_immediate(value):
+            # Use a different register than addr_reg
+            value_reg = None
+            for reg in ['$t0', '$t1', '$t2', '$t3', '$t4', '$t5', '$t6', '$t7', '$t8', '$t9', '$at']:
+                if reg != addr_reg:
+                    value_reg = reg
+                    break
+            if not value_reg:
+                value_reg = '$at'
+            normalized = self._normalize_value(value)
+            instructions.append(f"li {value_reg}, {normalized}")
+        else:
+            # Cargar desde memoria
+            value_reg = None
+            for reg in ['$t0', '$t1', '$t2', '$t3', '$t4', '$t5', '$t6', '$t7', '$t8', '$t9', '$at']:
+                if reg != addr_reg:
+                    value_reg = reg
+                    break
+            if not value_reg:
+                value_reg = '$at'
+            var_label = self._get_memory_label(value)
+            instructions.append(f"lw {value_reg}, {var_label}")
 
         # Almacenar el valor en la dirección
         instructions.append(f"sw {value_reg}, 0({addr_reg})  # Array store")
@@ -1333,10 +1363,285 @@ class MIPSGenerator:
         lines.extend(self.text_section)
         lines.append("")
 
-        # Funciones de runtime (futuro)
-        # lines.extend(self.runtime.get_runtime_functions())
+        # String runtime functions
+        lines.extend(self._generate_string_runtime_functions())
+        lines.append("")
 
         return "\n".join(lines)
+
+    def _generate_string_runtime_functions(self):
+        """Generate runtime helper functions for string operations"""
+        lines = []
+        lines.append("# ===== String Runtime Functions =====")
+        lines.append("")
+
+        # __string_copy: Copy null-terminated string from src to dest
+        # Args: $a0 = dest, $a1 = src
+        # Returns: nothing
+        lines.append("__string_copy:")
+        lines.append("    # Save registers")
+        lines.append("    addiu $sp, $sp, -8")
+        lines.append("    sw $t0, 0($sp)")
+        lines.append("    sw $t1, 4($sp)")
+        lines.append("")
+        lines.append("__string_copy_loop:")
+        lines.append("    lb $t0, 0($a1)      # Load byte from src")
+        lines.append("    sb $t0, 0($a0)      # Store byte to dest")
+        lines.append("    beq $t0, $zero, __string_copy_done  # If null terminator, done")
+        lines.append("    addiu $a0, $a0, 1   # dest++")
+        lines.append("    addiu $a1, $a1, 1   # src++")
+        lines.append("    j __string_copy_loop")
+        lines.append("")
+        lines.append("__string_copy_done:")
+        lines.append("    # Restore registers")
+        lines.append("    lw $t0, 0($sp)")
+        lines.append("    lw $t1, 4($sp)")
+        lines.append("    addiu $sp, $sp, 8")
+        lines.append("    jr $ra")
+        lines.append("")
+
+        # __string_length: Calculate length of null-terminated string
+        # Args: $a0 = string address
+        # Returns: $v0 = length
+        lines.append("__string_length:")
+        lines.append("    # Save registers")
+        lines.append("    addiu $sp, $sp, -4")
+        lines.append("    sw $t0, 0($sp)")
+        lines.append("")
+        lines.append("    li $v0, 0           # length = 0")
+        lines.append("__string_length_loop:")
+        lines.append("    lb $t0, 0($a0)      # Load byte")
+        lines.append("    beq $t0, $zero, __string_length_done  # If null, done")
+        lines.append("    addiu $v0, $v0, 1   # length++")
+        lines.append("    addiu $a0, $a0, 1   # str++")
+        lines.append("    j __string_length_loop")
+        lines.append("")
+        lines.append("__string_length_done:")
+        lines.append("    # Restore registers")
+        lines.append("    lw $t0, 0($sp)")
+        lines.append("    addiu $sp, $sp, 4")
+        lines.append("    jr $ra")
+        lines.append("")
+
+        # __string_compare: Compare two null-terminated strings
+        # Args: $a0 = str1, $a1 = str2
+        # Returns: $v0 = 1 if equal, 0 if not equal
+        lines.append("__string_compare:")
+        lines.append("    # Save registers")
+        lines.append("    addiu $sp, $sp, -8")
+        lines.append("    sw $t0, 0($sp)")
+        lines.append("    sw $t1, 4($sp)")
+        lines.append("")
+        lines.append("__string_compare_loop:")
+        lines.append("    lb $t0, 0($a0)      # Load byte from str1")
+        lines.append("    lb $t1, 0($a1)      # Load byte from str2")
+        lines.append("    bne $t0, $t1, __string_compare_not_equal  # If different, not equal")
+        lines.append("    beq $t0, $zero, __string_compare_equal  # If both null, equal")
+        lines.append("    addiu $a0, $a0, 1   # str1++")
+        lines.append("    addiu $a1, $a1, 1   # str2++")
+        lines.append("    j __string_compare_loop")
+        lines.append("")
+        lines.append("__string_compare_equal:")
+        lines.append("    li $v0, 1           # Return 1 (equal)")
+        lines.append("    j __string_compare_done")
+        lines.append("")
+        lines.append("__string_compare_not_equal:")
+        lines.append("    li $v0, 0           # Return 0 (not equal)")
+        lines.append("")
+        lines.append("__string_compare_done:")
+        lines.append("    # Restore registers")
+        lines.append("    lw $t0, 0($sp)")
+        lines.append("    lw $t1, 4($sp)")
+        lines.append("    addiu $sp, $sp, 8")
+        lines.append("    jr $ra")
+        lines.append("")
+
+        return lines
+
+    def _is_string_variable(self, operand):
+        """
+        Check if an operand represents a string variable by looking up its type in the symbol table.
+        """
+        # String literal label
+        if isinstance(operand, str) and operand.startswith('str_'):
+            return True
+
+        # Memory address - check memory manager and symbol table
+        if isinstance(operand, str) and operand.startswith('0x'):
+            addr = int(operand, 16)
+
+            # Find variable name from memory allocations
+            var_name = None
+            for name, allocated_addr in self.memory_manager.allocations.items():
+                if allocated_addr == addr:
+                    var_name = name
+                    break
+
+            if var_name:
+                # Look up type in symbol table
+                for scope in self.symbol_table.all_scopes:
+                    if var_name in scope.symbols:
+                        symbol = scope.symbols[var_name]
+                        if hasattr(symbol, 'type') and symbol.type is not None:
+                            type_name = symbol.type.name if hasattr(symbol.type, 'name') else str(symbol.type)
+                            if type_name == 'string':
+                                return True
+
+        return False
+
+    def _might_be_string_comparison(self, arg1, arg2):
+        """
+        Heurística para detectar si esta es una comparación de strings.
+        Usa información de la tabla de símbolos para determinar tipos.
+        """
+        # Check if either operand is a string variable or literal
+        if self._is_string_variable(arg1) or self._is_string_variable(arg2):
+            return True
+
+        return False
+
+    def _might_be_string_concat(self, arg1, arg2):
+        """
+        Heurística para detectar si esta es una concatenación de strings.
+        Uses symbol table lookup to verify types.
+        """
+        # Strong evidence: at least one operand is a string literal label
+        if isinstance(arg1, str) and arg1.startswith('str_'):
+            return True
+        if isinstance(arg2, str) and arg2.startswith('str_'):
+            return True
+
+        # Check if both operands are string variables using type information
+        # This prevents false positives with integer arithmetic
+        if self._is_string_variable(arg1) and self._is_string_variable(arg2):
+            return True
+        if self._is_string_variable(arg1) or self._is_string_variable(arg2):
+            # At least one is a string variable
+            # If the other is a temporary or address, check if it's also a string
+            if self._is_string_variable(arg1):
+                return self._is_string_variable(arg2) or (isinstance(arg2, str) and arg2.startswith('t'))
+            else:
+                return self._is_string_variable(arg1) or (isinstance(arg1, str) and arg1.startswith('t'))
+
+        return False
+
+    def _translate_string_concat(self, quad):
+        """
+        Traduce concatenación de strings: (+ str1, str2, result)
+
+        Strategy: Use a runtime buffer and inline string copy code
+        """
+        instructions = []
+        instructions.append("# String concatenation")
+
+        arg1 = quad.arg1
+        arg2 = quad.arg2
+        result = quad.result
+
+        # Use specific temp registers to avoid conflicts
+        str1_reg = '$s1'  # Use saved registers to preserve across calls
+        str2_reg = '$s2'
+        result_reg = self.register_allocator.get_reg(result)
+
+        # Save $s1 and $s2 if needed
+        instructions.append("addiu $sp, $sp, -8")
+        instructions.append("sw $s1, 0($sp)")
+        instructions.append("sw $s2, 4($sp)")
+
+        # Load addresses of both strings
+        self._load_string_address(arg1, str1_reg, instructions)
+        self._load_string_address(arg2, str2_reg, instructions)
+
+        # Load buffer address into result register
+        instructions.append(f"la {result_reg}, string_concat_buffer  # Load buffer address")
+
+        # Copy str1 to buffer
+        instructions.append(f"move $a0, {result_reg}  # dest = buffer")
+        instructions.append(f"move $a1, {str1_reg}  # src = str1")
+        instructions.append("jal __string_copy")
+
+        # Find end of buffer (after str1)
+        instructions.append(f"la $a0, string_concat_buffer")
+        instructions.append("jal __string_length")
+        instructions.append(f"la {result_reg}, string_concat_buffer")
+        instructions.append(f"add $a0, {result_reg}, $v0  # Move to end of str1")
+
+        # Copy str2 after str1
+        instructions.append(f"move $a1, {str2_reg}  # src = str2")
+        instructions.append("jal __string_copy")
+
+        # Reset result to buffer start
+        instructions.append(f"la {result_reg}, string_concat_buffer")
+
+        # Restore $s1 and $s2
+        instructions.append("lw $s1, 0($sp)")
+        instructions.append("lw $s2, 4($sp)")
+        instructions.append("addiu $sp, $sp, 8")
+
+        return instructions
+
+    def _translate_string_comparison(self, quad):
+        """
+        Traduce comparación de strings: (==, str1, str2, result) or (!=, str1, str2, result)
+        """
+        instructions = []
+        instructions.append("# String comparison")
+
+        arg1 = quad.arg1
+        arg2 = quad.arg2
+        result = quad.result
+
+        # Use saved registers
+        str1_reg = '$s1'
+        str2_reg = '$s2'
+        result_reg = self.register_allocator.get_reg(result)
+
+        # Save $s1 and $s2
+        instructions.append("addiu $sp, $sp, -8")
+        instructions.append("sw $s1, 0($sp)")
+        instructions.append("sw $s2, 4($sp)")
+
+        # Load string addresses
+        self._load_string_address(arg1, str1_reg, instructions)
+        self._load_string_address(arg2, str2_reg, instructions)
+
+        # Call string compare function
+        instructions.append(f"move $a0, {str1_reg}")
+        instructions.append(f"move $a1, {str2_reg}")
+        instructions.append("jal __string_compare")
+
+        # $v0 now contains 1 if equal, 0 if not equal
+        if quad.op == '==':
+            # Return the result as-is
+            instructions.append(f"move {result_reg}, $v0")
+        else:  # !=
+            # Invert the result
+            instructions.append(f"xori {result_reg}, $v0, 1")
+
+        # Restore $s1 and $s2
+        instructions.append("lw $s1, 0($sp)")
+        instructions.append("lw $s2, 4($sp)")
+        instructions.append("addiu $sp, $sp, 8")
+
+        return instructions
+
+    def _load_string_address(self, value, reg, instructions):
+        """Helper to load a string address into a register"""
+        if isinstance(value, str) and value.startswith('str_'):
+            # String literal label
+            instructions.append(f"la {reg}, {value}")
+        elif isinstance(value, str) and value.startswith('0x'):
+            # Memory address - load the address stored there
+            label = self._get_memory_label(value)
+            instructions.append(f"lw {reg}, {label}")
+        elif self._is_temporary(value):
+            # Already in a register
+            temp_reg = self.register_allocator.get_reg(value)
+            if temp_reg != reg:
+                instructions.append(f"move {reg}, {temp_reg}")
+        else:
+            # Fallback
+            instructions.append(f"li {reg}, 0  # Unknown string source")
 
     def save_to_file(self, filename):
         """Guarda el código MIPS en un archivo .asm"""

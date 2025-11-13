@@ -17,6 +17,7 @@ class SemanticVisitor(CompiscriptVisitor):
         self.warnings = []  # Para advertencias de código muerto
         self.unreachable_code = False  # Flag para detectar código muerto
         self.codegen = CodeGenerator(self.symbol_table)
+        self.codegen.current_visitor = self  # Allow code generator to call visitor methods
         self.current_temp = None
         
     # Helper methods
@@ -1803,3 +1804,61 @@ class SemanticVisitor(CompiscriptVisitor):
 
         return current_type if current_type else ERROR_TYPE
 
+
+    def visitSwitchStatement(self, ctx):
+        """Visit switch statement"""
+        # Visit the switch expression
+        switch_expr_type = self.visit(ctx.expression())
+        
+        if switch_expr_type == ERROR_TYPE:
+            return None
+        
+        # Switch expression must be integer or boolean
+        if switch_expr_type not in [INT_TYPE, BOOL_TYPE]:
+            self.add_error(ctx.expression(), f"Switch expression must be integer or boolean, found {switch_expr_type.name}")
+            return None
+        
+        # Generate code only if no errors
+        if not self.errors:
+            switch_value_temp = self.codegen.current_temp
+            
+            # Visit all case statements
+            cases = []
+            for case_ctx in ctx.switchCase():
+                # Visit case expression
+                case_expr_type = self.visit(case_ctx.expression())
+                if case_expr_type != ERROR_TYPE and case_expr_type != switch_expr_type:
+                    self.add_error(case_ctx.expression(), f"Case expression type {case_expr_type.name} doesn't match switch type {switch_expr_type.name}")
+                case_value_temp = self.codegen.current_temp
+                cases.append((case_value_temp, case_ctx))
+            
+            # Check for default case
+            default_case = ctx.defaultCase() if ctx.defaultCase() else None
+            
+            # Generate switch code
+            self.codegen.generate_switch_statement(
+                switch_value_temp,
+                cases,
+                default_case,
+                ctx
+            )
+        else:
+            # Still visit children for semantic analysis
+            for case_ctx in ctx.switchCase():
+                self.visit(case_ctx.expression())
+                for stmt in case_ctx.statement():
+                    self.visit(stmt)
+            
+            if ctx.defaultCase():
+                for stmt in ctx.defaultCase().statement():
+                    self.visit(stmt)
+        
+        return None
+
+    def visitSwitchCase(self, ctx):
+        """Visit switch case - handled by visitSwitchStatement"""
+        pass
+
+    def visitDefaultCase(self, ctx):
+        """Visit default case - handled by visitSwitchStatement"""
+        pass
