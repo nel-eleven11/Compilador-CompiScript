@@ -564,18 +564,26 @@ class SemanticVisitor(CompiscriptVisitor):
     
     # Determinar el tipo de un array literal
     def visitArrayLiteral(self, ctx):
-        
+
         if not ctx.expression() or len(ctx.expression()) == 0:
             return ArrayType(NULL_TYPE, [0])  # Array vacío de tipo desconocido
-        
-        # Verificar que todos los elementos sean del mismo tipo
+
+        # Verificar que todos los elementos sean del mismo tipo y guardar los valores
+        element_values = []
         element_type = self.visit(ctx.expression(0))
+        element_values.append(self.codegen.current_temp)
+
         for expr in ctx.expression()[1:]:
             current_type = self.visit(expr)
+            element_values.append(self.codegen.current_temp)
             if current_type != element_type:
                 self.add_error(ctx, f"Elementos de array con tipos inconsistentes: {element_type.name} vs {current_type.name}")
                 return None
-        
+
+        # Store the element values for later initialization
+        # We'll pass this through current_temp as a special marker
+        self.codegen.current_temp = ('array_literal', element_values)
+
         return ArrayType(element_type, [len(ctx.expression())])
 
     def visitVariableDeclaration(self, ctx):
@@ -626,9 +634,18 @@ class SemanticVisitor(CompiscriptVisitor):
 
         # GENERACIÓN DE CÓDIGO (ya visitamos arriba)
         if not self.errors and ctx.initializer():
-            init_value = self.codegen.current_temp  # Puede ser literal o temporal
-            var_address = self.codegen.get_variable_address(var_name)
-            self.codegen.generate_assignment(var_address, init_value, ctx)
+            init_value = self.codegen.current_temp  # Puede ser literal, temporal, o array literal
+
+            # Check if it's an array literal initialization
+            if isinstance(init_value, tuple) and init_value[0] == 'array_literal':
+                # Generate code to initialize each array element
+                element_values = init_value[1]
+                var_address = self.codegen.get_variable_address(var_name)
+                self.codegen.generate_array_literal_init(var_address, element_values, ctx)
+            else:
+                # Regular assignment
+                var_address = self.codegen.get_variable_address(var_name)
+                self.codegen.generate_assignment(var_address, init_value, ctx)
         
         # Si se está dentro de una clase, registrar como atributo
         if self.current_class:
@@ -964,7 +981,132 @@ class SemanticVisitor(CompiscriptVisitor):
             self.codegen.current_temp = result_temp
 
         return func_symbol.return_type
-    
+
+    def visitIndexExpr(self, ctx):
+        """Visit array indexing expression: arr[index]"""
+        # Get the parent context to find the array name
+        parent_ctx = ctx.parentCtx
+        if not parent_ctx or not hasattr(parent_ctx, 'primaryAtom'):
+            return ERROR_TYPE
+
+        array_name = parent_ctx.primaryAtom().getText()
+        array_symbol = self.symbol_table.lookup(array_name)
+
+        if not array_symbol:
+            self.add_error(ctx, f"Array '{array_name}' no declarado")
+            return ERROR_TYPE
+
+        if not isinstance(array_symbol.type, ArrayType):
+            self.add_error(ctx, f"'{array_name}' no es un array")
+            return ERROR_TYPE
+
+        # Visit the index expression
+        index_type = self.visit(ctx.expression())
+        if index_type != INT_TYPE and index_type != ERROR_TYPE:
+            self.add_error(ctx, f"Índice de array debe ser integer, encontrado {index_type.name}")
+            return ERROR_TYPE
+
+        # Generate code for array access (load)
+        if not self.errors:
+            index_temp = self.codegen.current_temp
+            result_temp = self.codegen.generate_array_access(array_name, index_temp, ctx)
+            self.codegen.current_temp = result_temp
+
+        # Return the element type of the array
+        return array_symbol.type.element_type
+
+    def visitAssignExpr(self, ctx):
+        """Visit assignment expression: lhs = value"""
+        # Check if lhs contains array indexing
+        lhs_ctx = ctx.lhs
+
+        # Check if lhs has suffixOp (array indexing or property access)
+        has_index = False
+        if hasattr(lhs_ctx, 'suffixOp') and lhs_ctx.suffixOp():
+            for suffix in lhs_ctx.suffixOp():
+                if hasattr(suffix, 'expression'):  # This is IndexExpr
+                    has_index = True
+                    break
+
+        # Handle array index assignment: arr[index] = value
+        if has_index:
+            # Get array name
+            array_name = lhs_ctx.primaryAtom().getText()
+            array_symbol = self.symbol_table.lookup(array_name)
+
+            if not array_symbol:
+                self.add_error(ctx, f"Array '{array_name}' no declarado")
+                return ERROR_TYPE
+
+            if not isinstance(array_symbol.type, ArrayType):
+                self.add_error(ctx, f"'{array_name}' no es un array")
+                return ERROR_TYPE
+
+            # Find the IndexExpr suffix
+            index_ctx = None
+            for suffix in lhs_ctx.suffixOp():
+                if hasattr(suffix, 'expression'):
+                    index_ctx = suffix
+                    break
+
+            if not index_ctx:
+                return ERROR_TYPE
+
+            # Visit index expression FIRST
+            index_type = self.visit(index_ctx.expression())
+            if index_type != INT_TYPE and index_type != ERROR_TYPE:
+                self.add_error(ctx, f"Índice de array debe ser integer, encontrado {index_type.name}")
+                return ERROR_TYPE
+            index_temp = self.codegen.current_temp
+
+            # Visit value expression
+            value_type = self.visit(ctx.assignmentExpr())
+            value_temp = self.codegen.current_temp
+
+            # Type check
+            element_type = array_symbol.type.element_type
+            if value_type != ERROR_TYPE and not value_type.can_assign_to(element_type):
+                self.add_error(ctx, f"No se puede asignar {value_type.name} a array de {element_type.name}")
+                return ERROR_TYPE
+
+            # Generate array store code
+            if not self.errors:
+                self.codegen.generate_array_assignment(array_name, index_temp, value_temp, ctx)
+
+            return value_type
+
+        # Handle simple variable assignment: var = value
+        if hasattr(lhs_ctx, 'primaryAtom') and not lhs_ctx.suffixOp():
+            var_name = lhs_ctx.primaryAtom().getText()
+            symbol = self.symbol_table.lookup(var_name)
+
+            if not symbol:
+                self.add_error(ctx, f"Variable '{var_name}' no declarada")
+                return ERROR_TYPE
+
+            if symbol.is_const:
+                self.add_error(ctx, f"No se puede reasignar la constante '{var_name}'")
+                return ERROR_TYPE
+
+            # Visit value expression
+            value_type = self.visit(ctx.assignmentExpr())
+            value_temp = self.codegen.current_temp
+
+            # Type check
+            if value_type != ERROR_TYPE and not value_type.can_assign_to(symbol.type):
+                self.add_error(ctx, f"No se puede asignar {value_type.name} a {symbol.type.name}")
+                return ERROR_TYPE
+
+            # Generate assignment code
+            if not self.errors:
+                var_address = self.codegen.get_variable_address(var_name)
+                self.codegen.generate_assignment(var_address, value_temp, ctx)
+
+            return value_type
+
+        # Otherwise, not an assignment, just visit children
+        return self.visitChildren(ctx)
+
     # CONTROL FLOW VALIDATION
     def visitIfStatement(self, ctx):
         condition_type = self.visit(ctx.expression())
@@ -997,6 +1139,26 @@ class SemanticVisitor(CompiscriptVisitor):
 
         return None
     
+    def visitPrintStatement(self, ctx):
+        """Visit print statement: print(expression);"""
+        # Visit the expression to get its type
+        expr_type = self.visit(ctx.expression())
+
+        if expr_type == ERROR_TYPE:
+            return None
+
+        # Validate that the type is printable (integer, string, boolean)
+        if expr_type not in [INT_TYPE, STRING_TYPE, BOOL_TYPE]:
+            self.add_error(ctx, f"print() no puede imprimir tipo '{expr_type.name}'")
+            return None
+
+        # Generate print code only if no errors
+        if not self.errors:
+            value_temp = self.codegen.current_temp
+            self.codegen.generate_print_statement(value_temp, expr_type, ctx)
+
+        return None
+
     def visitWhileStatement(self, ctx):
         # Enter loop context first
         prev_in_loop = self.in_loop

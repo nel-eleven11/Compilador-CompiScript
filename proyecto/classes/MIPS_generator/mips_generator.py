@@ -48,15 +48,33 @@ class MIPSGenerator:
         self.data_section.append(".data")
 
         # Obtener todas las variables globales del memory manager
+        # Include both regular variables (0x1000-0x7FFF) and arrays (0x8000+)
         global_vars = {name: addr for name, addr in self.memory_manager.allocations.items()
-                      if isinstance(addr, int) and addr >= 0x1000 and addr < 0x8000}
+                      if isinstance(addr, int) and addr >= 0x1000}
 
         # Ordenar por dirección
         sorted_vars = sorted(global_vars.items(), key=lambda x: x[1])
 
         for var_name, address in sorted_vars:
-            # Generar etiqueta para cada variable
-            self.data_section.append(f"var_{var_name}: .word 0  # Address: {hex(address)}")
+            # Check if this is an array (address >= 0x8000)
+            if address >= 0x8000:
+                # For arrays, allocate space for multiple words (assuming 10 elements for now)
+                # This is a simplification - ideally we'd know the actual array size
+                self.data_section.append(f"var_{var_name}: .space 40  # Array at {hex(address)} (10 words)")
+            else:
+                # Regular variable
+                self.data_section.append(f"var_{var_name}: .word 0  # Address: {hex(address)}")
+
+        # Add string literals
+        string_literals = self.code_generator.get_string_literals()
+        if string_literals:
+            self.data_section.append("# String literals")
+            for string_value, label in string_literals.items():
+                # Remove quotes and escape special characters for MIPS
+                string_content = string_value[1:-1]  # Remove surrounding quotes
+                # Escape backslashes and quotes
+                string_content = string_content.replace('\\', '\\\\').replace('"', '\\"')
+                self.data_section.append(f'{label}: .asciiz "{string_content}"')
 
         self.data_section.append("")
 
@@ -190,6 +208,16 @@ class MIPSGenerator:
         elif op == 'label':
             return self._translate_label_quad(quad)
 
+        # Operaciones de print
+        elif op in ['print_int', 'print_str']:
+            return self._translate_print_quad(quad)
+
+        # Operaciones de arrays
+        elif op == '[]':
+            return self._translate_array_load_quad(quad)
+        elif op == '[]=':
+            return self._translate_array_store_quad(quad)
+
         else:
             return [f"# TODO: Translate operation '{op}'"]
 
@@ -212,12 +240,38 @@ class MIPSGenerator:
         if not mips_op:
             return [f"# ERROR: Unknown arithmetic operation '{quad.op}'"]
 
-        # Obtener registros para los operandos
-        arg1_reg = self.register_allocator.get_reg(quad.arg1)
-        arg2_reg = self.register_allocator.get_reg(quad.arg2)
+        # Result is always a temporary - allocate FIRST
         result_reg = self.register_allocator.get_reg(quad.result)
 
-        # Cargar arg1
+        # Obtener registros para los operandos
+        # For arg1: use get_reg if it's a temporary, otherwise use first available temp
+        if self._is_temporary(quad.arg1):
+            arg1_reg = self.register_allocator.get_reg(quad.arg1)
+        else:
+            # For non-temporaries, pick a specific temp register
+            # Try to find one that's not used by result
+            arg1_reg = None
+            for reg in ['$t0', '$t1', '$t2', '$t3', '$t4', '$t5', '$t6', '$t7', '$t8', '$t9']:
+                if reg != result_reg and reg not in self.register_allocator.used_regs:
+                    arg1_reg = reg
+                    break
+            if not arg1_reg:
+                arg1_reg = self.register_allocator.get_reg_temp("arg1")
+
+        # For arg2: use get_reg if it's a temporary, otherwise use different temp from arg1
+        if self._is_temporary(quad.arg2):
+            arg2_reg = self.register_allocator.get_reg(quad.arg2)
+        else:
+            # For non-temporaries, pick a DIFFERENT temp register from arg1
+            arg2_reg = None
+            for reg in ['$t0', '$t1', '$t2', '$t3', '$t4', '$t5', '$t6', '$t7', '$t8', '$t9']:
+                if reg != result_reg and reg != arg1_reg and reg not in self.register_allocator.used_regs:
+                    arg2_reg = reg
+                    break
+            if not arg2_reg:
+                arg2_reg = self.register_allocator.get_reg_temp("arg2")
+
+        # Cargar arg1 - CHECK MEMORY ADDRESS FIRST!
         if self._is_temporary(quad.arg1):
             # Si es temporal, ya debería estar en registro
             pass
@@ -225,14 +279,36 @@ class MIPSGenerator:
             # FP-relative addressing: FP[offset]
             offset = self._extract_fp_offset(quad.arg1)
             instructions.append(f"lw {arg1_reg}, {offset}($fp)  # Load from frame")
+        elif isinstance(quad.arg1, str) and quad.arg1.startswith('0x'):
+            # Es una dirección de memoria - check if it's an array
+            try:
+                addr_int = int(quad.arg1, 16)
+                if addr_int >= 0x8000:
+                    # Array address - load ADDRESS not value
+                    addr = self._get_memory_label(quad.arg1)
+                    instructions.append(f"la {arg1_reg}, {addr}")
+                else:
+                    # Regular variable - load value
+                    addr = self._get_memory_label(quad.arg1)
+                    instructions.append(f"lw {arg1_reg}, {addr}")
+            except ValueError:
+                # Not a valid hex, load as variable
+                addr = self._get_memory_label(quad.arg1)
+                instructions.append(f"lw {arg1_reg}, {addr}")
         elif self._is_immediate(quad.arg1):
-            instructions.append(f"li {arg1_reg}, {quad.arg1}")
+            # If arg2 is also immediate, ensure we load into different register by using $at temporarily
+            if self._is_immediate(quad.arg2) and not self._is_temporary(quad.arg2):
+                # Use $at for arg1 to avoid conflict
+                instructions.append(f"li $at, {quad.arg1}")
+                arg1_reg = '$at'
+            else:
+                instructions.append(f"li {arg1_reg}, {quad.arg1}")
         else:
             # Es una variable, cargar desde memoria
             addr = self._get_memory_label(quad.arg1)
             instructions.append(f"lw {arg1_reg}, {addr}")
 
-        # Cargar arg2
+        # Cargar arg2 - CHECK MEMORY ADDRESS FIRST!
         if self._is_temporary(quad.arg2):
             # Si es temporal, ya debería estar en registro
             pass
@@ -240,8 +316,32 @@ class MIPSGenerator:
             # FP-relative addressing: FP[offset]
             offset = self._extract_fp_offset(quad.arg2)
             instructions.append(f"lw {arg2_reg}, {offset}($fp)  # Load from frame")
+        elif isinstance(quad.arg2, str) and quad.arg2.startswith('0x'):
+            # Es una dirección de memoria - check if it's an array
+            try:
+                addr_int = int(quad.arg2, 16)
+                if addr_int >= 0x8000:
+                    # Array address - load ADDRESS not value
+                    addr = self._get_memory_label(quad.arg2)
+                    instructions.append(f"la {arg2_reg}, {addr}")
+                else:
+                    # Regular variable - load value
+                    addr = self._get_memory_label(quad.arg2)
+                    instructions.append(f"lw {arg2_reg}, {addr}")
+            except ValueError:
+                # Not a valid hex, load as variable
+                addr = self._get_memory_label(quad.arg2)
+                instructions.append(f"lw {arg2_reg}, {addr}")
         elif self._is_immediate(quad.arg2):
-            instructions.append(f"li {arg2_reg}, {quad.arg2}")
+            # For immediates, prefer using $at to avoid overwriting allocated temporaries
+            # Unless arg1 already used $at, then use the allocated arg2_reg
+            if arg1_reg == '$at' or not self._is_temporary(quad.arg1):
+                # arg1 used $at OR arg1 is not a temporary, so use allocated reg for arg2
+                instructions.append(f"li {arg2_reg}, {quad.arg2}")
+            else:
+                # arg1 is a temporary in its own register, safe to use $at for arg2
+                instructions.append(f"li $at, {quad.arg2}")
+                arg2_reg = '$at'
         else:
             # Es una variable, cargar desde memoria
             addr = self._get_memory_label(quad.arg2)
@@ -267,23 +367,61 @@ class MIPSGenerator:
         value = quad.arg1
         target = quad.result
 
-        # Obtener registro para el valor
-        value_reg = self.register_allocator.get_reg_temp("assign_temp")
+        # Detectar si estamos asignando una dirección de array a un temporal
+        # Si es así, usar un registro $s en lugar de $t para evitar sobrescritura
+        is_array_address_assignment = False
+        if self._is_temporary(target) and isinstance(value, str) and value.startswith('0x'):
+            try:
+                addr_int = int(value, 16)
+                if addr_int >= 0x8000:
+                    is_array_address_assignment = True
+            except ValueError:
+                pass
 
-        # Cargar el valor usando el helper
+        # Si el target es temporal, asignar su registro PRIMERO
+        # Esto evita conflictos donde value_reg y target_reg son el mismo
+        target_reg = None
+        if self._is_temporary(target):
+            # CLAVE: Usar contexto 'save' para arrays para obtener registro $s
+            context = 'save' if is_array_address_assignment else 'arithmetic'
+            target_reg = self.register_allocator.get_reg(target, context=context)
+
+        # Obtener registro para el valor
         if self._is_temporary(value):
             # Si es temporal, obtener su registro
             value_reg = self.register_allocator.get_reg(value)
         else:
-            # Usar helper para cargar inmediato o variable
+            # Para valores no-temporales:
+            # Si target es temporal, cargar directamente en target_reg
+            # Si no, usar un registro temporal
+            if target_reg:
+                value_reg = target_reg
+            else:
+                value_reg = self.register_allocator.get_reg_temp("assign_temp")
+            # Cargar el valor usando el helper
             self._load_value_to_reg(value, value_reg, instructions)
 
         # Guardar en el target
         if self._is_temporary(target):
-            # Si target es temporal, mover a su registro
-            target_reg = self.register_allocator.get_reg(target)
+            # Si target es temporal, mover a su registro (si es diferente)
             if value_reg != target_reg:
                 instructions.append(f"move {target_reg}, {value_reg}")
+        elif isinstance(target, str) and target.startswith('0x'):
+            # Target es una dirección de memoria
+            try:
+                addr_int = int(target, 16)
+                if addr_int >= 0x8000:
+                    # Es un array - esto no debería pasar en una asignación normal
+                    # Arrays se modifican vía indexed store
+                    target_addr = self._get_memory_label(target)
+                    instructions.append(f"sw {value_reg}, {target_addr}")
+                else:
+                    # Variable regular
+                    target_addr = self._get_memory_label(target)
+                    instructions.append(f"sw {value_reg}, {target_addr}")
+            except ValueError:
+                target_addr = self._get_memory_label(target)
+                instructions.append(f"sw {value_reg}, {target_addr}")
         else:
             # Es una variable o dirección, guardar en memoria
             target_addr = self._get_memory_label(target)
@@ -333,11 +471,22 @@ class MIPSGenerator:
         instructions = []
 
         # Obtener registros para los operandos
-        arg1_reg = self.register_allocator.get_reg(quad.arg1)
-        arg2_reg = self.register_allocator.get_reg(quad.arg2)
+        # For arg1: use get_reg if it's a temporary, otherwise get a temp register
+        if self._is_temporary(quad.arg1):
+            arg1_reg = self.register_allocator.get_reg(quad.arg1)
+        else:
+            arg1_reg = self.register_allocator.get_reg_temp("arg1")
+
+        # For arg2: use get_reg if it's a temporary, otherwise get a temp register
+        if self._is_temporary(quad.arg2):
+            arg2_reg = self.register_allocator.get_reg(quad.arg2)
+        else:
+            arg2_reg = self.register_allocator.get_reg_temp("arg2")
+
+        # Result is always a temporary
         result_reg = self.register_allocator.get_reg(quad.result)
 
-        # Cargar arg1
+        # Cargar arg1 - CHECK MEMORY ADDRESS FIRST!
         if self._is_temporary(quad.arg1):
             # Si es temporal, ya debería estar en registro
             pass
@@ -345,6 +494,22 @@ class MIPSGenerator:
             # FP-relative addressing: FP[offset]
             offset = self._extract_fp_offset(quad.arg1)
             instructions.append(f"lw {arg1_reg}, {offset}($fp)  # Load from frame")
+        elif isinstance(quad.arg1, str) and quad.arg1.startswith('0x'):
+            # Es una dirección de memoria - check if it's an array
+            try:
+                addr_int = int(quad.arg1, 16)
+                if addr_int >= 0x8000:
+                    # Array address - load ADDRESS not value
+                    addr = self._get_memory_label(quad.arg1)
+                    instructions.append(f"la {arg1_reg}, {addr}")
+                else:
+                    # Regular variable - load value
+                    addr = self._get_memory_label(quad.arg1)
+                    instructions.append(f"lw {arg1_reg}, {addr}")
+            except ValueError:
+                # Not a valid hex, load as variable
+                addr = self._get_memory_label(quad.arg1)
+                instructions.append(f"lw {arg1_reg}, {addr}")
         elif self._is_immediate(quad.arg1):
             instructions.append(f"li {arg1_reg}, {quad.arg1}")
         else:
@@ -352,7 +517,7 @@ class MIPSGenerator:
             addr = self._get_memory_label(quad.arg1)
             instructions.append(f"lw {arg1_reg}, {addr}")
 
-        # Cargar arg2
+        # Cargar arg2 - CHECK MEMORY ADDRESS FIRST!
         if self._is_temporary(quad.arg2):
             # Si es temporal, ya debería estar en registro
             pass
@@ -360,6 +525,22 @@ class MIPSGenerator:
             # FP-relative addressing: FP[offset]
             offset = self._extract_fp_offset(quad.arg2)
             instructions.append(f"lw {arg2_reg}, {offset}($fp)  # Load from frame")
+        elif isinstance(quad.arg2, str) and quad.arg2.startswith('0x'):
+            # Es una dirección de memoria - check if it's an array
+            try:
+                addr_int = int(quad.arg2, 16)
+                if addr_int >= 0x8000:
+                    # Array address - load ADDRESS not value
+                    addr = self._get_memory_label(quad.arg2)
+                    instructions.append(f"la {arg2_reg}, {addr}")
+                else:
+                    # Regular variable - load value
+                    addr = self._get_memory_label(quad.arg2)
+                    instructions.append(f"lw {arg2_reg}, {addr}")
+            except ValueError:
+                # Not a valid hex, load as variable
+                addr = self._get_memory_label(quad.arg2)
+                instructions.append(f"lw {arg2_reg}, {addr}")
         elif self._is_immediate(quad.arg2):
             instructions.append(f"li {arg2_reg}, {quad.arg2}")
         else:
@@ -661,6 +842,143 @@ class MIPSGenerator:
         label_name = self._sanitize_label(quad.result)
         return [f"{label_name}:"]
 
+    def _translate_print_quad(self, quad):
+        """
+        Traduce cuádruplos de print: (print_int, value, None, None)
+        Imprime un valor usando syscalls de MIPS
+
+        Args:
+            quad: Cuádruplo con op='print_int' o 'print_str'
+
+        Returns:
+            Lista de instrucciones MIPS
+        """
+        instructions = []
+        value = quad.arg1
+
+        if quad.op == 'print_int':
+            # Cargar el valor en $a0 usando el método helper existente
+            if self._is_temporary(value):
+                # Es un temporal
+                value_reg = self.register_allocator.get_reg(value)
+                instructions.append(f"move $a0, {value_reg}")
+            elif self._is_fp_relative(value):
+                # Es una variable local (FP[offset])
+                offset = self._extract_fp_offset(value)
+                instructions.append(f"lw $a0, {offset}($fp)")
+            elif isinstance(value, str) and value.startswith('0x'):
+                # Es una dirección de memoria global (0x1000, etc.)
+                var_label = self._get_memory_label(value)
+                instructions.append(f"lw $a0, {var_label}")
+            elif self._is_immediate(value):
+                # Es un literal
+                normalized = self._normalize_value(value)
+                instructions.append(f"li $a0, {normalized}")
+            else:
+                # Cualquier otro caso - intentar cargar desde etiqueta
+                var_label = self._get_memory_label(value)
+                instructions.append(f"lw $a0, {var_label}")
+
+            # Syscall para imprimir entero
+            instructions.append("li $v0, 1       # print_int")
+            instructions.append("syscall")
+
+            # Opcional: imprimir newline después del número
+            instructions.append("li $v0, 11      # print_char")
+            instructions.append("li $a0, 10      # newline")
+            instructions.append("syscall")
+
+        elif quad.op == 'print_str':
+            # Para strings, necesitamos la etiqueta en .data
+            # Por ahora, implementamos soporte básico
+            if isinstance(value, str) and value.startswith('"') and value.endswith('"'):
+                # Es un literal string - necesitamos crear una etiqueta en .data
+                # Por ahora, retornamos un placeholder
+                instructions.append(f"# TODO: Print string literal {value}")
+            else:
+                # Es una variable string
+                instructions.append(f"# TODO: Print string variable {value}")
+
+        return instructions
+
+    def _translate_array_load_quad(self, quad):
+        """
+        Traduce cuádruplos de carga desde array: ([], addr, None, result)
+        Carga el valor desde la dirección en addr al result
+
+        Args:
+            quad: Cuádruplo con op='[]', arg1=dirección efectiva
+
+        Returns:
+            Lista de instrucciones MIPS
+        """
+        instructions = []
+        addr = quad.arg1
+        result = quad.result
+
+        # Obtener la dirección efectiva en un registro
+        if self._is_temporary(addr):
+            addr_reg = self.register_allocator.get_reg(addr)
+        elif self._is_fp_relative(addr):
+            offset = self._extract_fp_offset(addr)
+            addr_reg = self.register_allocator.get_reg_temp("addr")
+            instructions.append(f"lw {addr_reg}, {offset}($fp)")
+        else:
+            # Cargar dirección inmediata
+            addr_reg = self.register_allocator.get_reg_temp("addr")
+            instructions.append(f"li {addr_reg}, {addr}")
+
+        # Cargar el valor desde la dirección
+        result_reg = self.register_allocator.get_reg(result)
+        instructions.append(f"lw {result_reg}, 0({addr_reg})  # Array load")
+
+        return instructions
+
+    def _translate_array_store_quad(self, quad):
+        """
+        Traduce cuádruplos de almacenamiento en array: ([]=, value, None, addr_temp)
+        Almacena value en la dirección contenida en addr_temp
+
+        Args:
+            quad: Cuádruplo con op='[]='
+            Format: ([]=, value_temp, None, effective_address_temp)
+
+        Returns:
+            Lista de instrucciones MIPS
+        """
+        instructions = []
+        value = quad.arg1
+        addr = quad.result  # La dirección efectiva está en result, no en arg2
+
+        # Obtener el valor a almacenar
+        if self._is_temporary(value):
+            value_reg = self.register_allocator.get_reg(value)
+        elif self._is_immediate(value):
+            value_reg = self.register_allocator.get_reg_temp("value")
+            normalized = self._normalize_value(value)
+            instructions.append(f"li {value_reg}, {normalized}")
+        else:
+            # Cargar desde memoria
+            value_reg = self.register_allocator.get_reg_temp("value")
+            var_label = self._get_memory_label(value)
+            instructions.append(f"lw {value_reg}, {var_label}")
+
+        # Obtener la dirección destino
+        if self._is_temporary(addr):
+            addr_reg = self.register_allocator.get_reg(addr)
+        elif self._is_fp_relative(addr):
+            offset = self._extract_fp_offset(addr)
+            addr_reg = self.register_allocator.get_reg_temp("addr")
+            instructions.append(f"lw {addr_reg}, {offset}($fp)")
+        else:
+            addr_reg = self.register_allocator.get_reg_temp("addr")
+            instructions.append(f"li {addr_reg}, {addr}")
+
+        # Almacenar el valor en la dirección
+        instructions.append(f"sw {value_reg}, 0({addr_reg})  # Array store")
+
+        return instructions
+
     def _translate_function_quad(self, quad):
         """
         Traduce cuádruplos de función: enter, call, push, pop, return, leave
@@ -903,6 +1221,22 @@ class MIPSGenerator:
             # FP-relative addressing: FP[offset]
             offset = self._extract_fp_offset(value)
             instructions.append(f"lw {reg}, {offset}($fp)  # Load from frame")
+        elif isinstance(value, str) and value.startswith('0x'):
+            # Es una dirección de memoria - verificar si es un array
+            try:
+                addr_int = int(value, 16)
+                if addr_int >= 0x8000:
+                    # Es un array - cargar DIRECCIÓN (la), no valor (lw)
+                    addr_label = self._get_memory_label(value)
+                    instructions.append(f"la {reg}, {addr_label}  # Load array address")
+                else:
+                    # Es una variable regular - cargar valor
+                    addr_label = self._get_memory_label(value)
+                    instructions.append(f"lw {reg}, {addr_label}")
+            except ValueError:
+                # No es hex válido, tratar como variable
+                addr = self._get_memory_label(value)
+                instructions.append(f"lw {reg}, {addr}")
         elif self._is_immediate(value):
             # Es un inmediato (número o booleano)
             normalized = self._normalize_value(value)

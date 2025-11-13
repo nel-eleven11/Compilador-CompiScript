@@ -70,6 +70,9 @@ class RegisterAllocator:
         if reg:
             self.temp_to_reg[temp_name] = reg
             self.used_regs.add(reg)
+            # IMPORTANTE: Remover de free_regs si está ahí
+            if reg in self.free_regs:
+                self.free_regs.remove(reg)
             return reg
         else:
             # No hay registros disponibles, hacer spill
@@ -86,12 +89,19 @@ class RegisterAllocator:
         Returns:
             String con el registro MIPS
         """
-        if self.free_regs:
-            reg = self.free_regs[0]  # Tomar el primero disponible
-            return reg
-        else:
-            # Si no hay libres, usar $t9 como registro temporal por defecto
-            return '$t9'
+        # Find a free register that's not currently used by a temporary
+        for reg in self.free_regs:
+            if reg not in self.used_regs:
+                return reg
+
+        # If all free_regs are used, try to find any $t register not in used_regs
+        for i in range(10):
+            reg = f'$t{i}'
+            if reg not in self.used_regs:
+                return reg
+
+        # Last resort: use $t9 (might overwrite something, but better than crashing)
+        return '$t9'
 
     def _allocate_new_register(self, context):
         """

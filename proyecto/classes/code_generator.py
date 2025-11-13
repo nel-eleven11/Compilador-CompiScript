@@ -22,6 +22,10 @@ class CodeGenerator:
         self.used_temps_in_expr = set()
         self.in_assignment_context = False  # NUEVO
 
+        # String literals management
+        self.string_literals = {}  # Map from string value to label
+        self.string_counter = 0  # Counter for generating unique string labels
+
     def set_current_function(self, function_name):
         self.current_function = function_name
         if function_name not in self.temp_counters:
@@ -168,7 +172,7 @@ class CodeGenerator:
                 address = self.memory_manager.allocate_global(var_name, size)
                 return f"0x{address:04X}"
 
-        # Variables locales
+        # Variables locales (dentro de funciones)
         if self.current_ar:
             function_name = self.current_ar.function_name
             size = self.get_type_size(symbol.type)
@@ -177,7 +181,11 @@ class CodeGenerator:
             address = self.memory_manager.allocate_local(var_name, size, function_name)
             return address  # Ya retorna "FP[offset]"
 
-        return f"UNKNOWN_{var_name}"
+        # Variables en scopes locales pero fuera de funciones (ej: for loops a nivel global)
+        # Tratarlas como globales
+        size = self.get_type_size(symbol.type)
+        address = self.memory_manager.allocate_global(var_name, size)
+        return f"0x{address:04X}"
         
     def get_quadruples(self):
         """Devuelve la lista de cuádruplos generados"""
@@ -266,12 +274,29 @@ class CodeGenerator:
     def generate_load_immediate(self, value, ctx=None):
         """
         OPTIMIZADO: No genera temporal para literales en contexto de asignación
+        Maneja strings almacenándolos en la sección .data
         """
+        # Handle string literals specially
+        if isinstance(value, str) and value.startswith('"') and value.endswith('"'):
+            # String literal - store in .data section and return label
+            string_label = self.add_string_literal(value)
+
+            # Si estamos en contexto de asignación, retornar el label directamente
+            if self.in_assignment_context:
+                self.current_temp = string_label
+                return string_label
+
+            # En expresiones complejas, cargar la dirección del string
+            temp = self.new_temp()
+            self.emit_quad('=', string_label, None, temp)
+            self.current_temp = temp
+            return temp
+
         # Si estamos en contexto de asignación, retornar el valor directamente
         if self.in_assignment_context:
             self.current_temp = value
             return value
-        
+
         # En expresiones complejas, sí necesitamos temporal
         temp = self.new_temp()
         self.emit_quad('=', value, None, temp)
@@ -405,6 +430,27 @@ class CodeGenerator:
         self.emit_quad('label', None, None, label_end)
 
         return {'then_label': label_then, 'else_label': label_else, 'end_label': label_end}
+
+    def generate_print_statement(self, value_temp, value_type, ctx=None):
+        """
+        Genera código para imprimir un valor
+        Args:
+            value_temp: Temporal o dirección que contiene el valor
+            value_type: Tipo del valor (INT_TYPE, STRING_TYPE, BOOL_TYPE)
+            ctx: Contexto del parser (opcional)
+        """
+        from classes.types import INT_TYPE, STRING_TYPE, BOOL_TYPE
+
+        # Determinar el tipo de print basado en el tipo del valor
+        if value_type == INT_TYPE:
+            self.emit_quad('print_int', value_temp, None, None, comment="Print integer")
+        elif value_type == BOOL_TYPE:
+            self.emit_quad('print_int', value_temp, None, None, comment="Print boolean as integer")
+        elif value_type == STRING_TYPE:
+            self.emit_quad('print_str', value_temp, None, None, comment="Print string")
+        else:
+            # Fallback: print como integer
+            self.emit_quad('print_int', value_temp, None, None, comment=f"Print {value_type.name}")
 
     def generate_while_loop(self, condition_func, body_func, ctx=None):
         """
@@ -569,6 +615,52 @@ class CodeGenerator:
             elem_size = self.get_type_size(symbol.type.element_type)
 
         return self.generate_indexed_store(base_tmp, index_temp, value_temp, elem_size, ctx)
+
+    def generate_array_literal_init(self, array_address, element_values, ctx=None):
+        """
+        Genera código para inicializar un array con valores literales
+        Patrón: arr[0] = val0; arr[1] = val1; ...
+        """
+        for index, value_temp in enumerate(element_values):
+            # Create constant index
+            index_temp = self.new_temp()
+            self.emit_quad('=', index, None, index_temp)
+
+            # Generate indexed store
+            offset_temp = self.new_temp()
+            self.emit_quad('*', index_temp, 4, offset_temp)
+
+            addr_temp = self.new_temp()
+            self.emit_quad('+', array_address, offset_temp, addr_temp)
+
+            self.emit_quad('[]=', value_temp, None, addr_temp)
+
+    def add_string_literal(self, string_value):
+        """
+        Adds a string literal to the string table and returns its label
+
+        Args:
+            string_value: The string including quotes (e.g., "Hello")
+
+        Returns:
+            Label for the string (e.g., "str_0")
+        """
+        # Check if we already have this string
+        if string_value in self.string_literals:
+            return self.string_literals[string_value]
+
+        # Create a new label for this string
+        label = f"str_{self.string_counter}"
+        self.string_counter += 1
+
+        # Store the mapping
+        self.string_literals[string_value] = label
+
+        return label
+
+    def get_string_literals(self):
+        """Returns the dictionary of string literals for MIPS generation"""
+        return self.string_literals
 
     def generate_matrix_access(self, matrix_name, row_index_temp, col_index_temp, cols_count, ctx=None):
         """
