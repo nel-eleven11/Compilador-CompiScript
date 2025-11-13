@@ -896,8 +896,11 @@ class SemanticVisitor(CompiscriptVisitor):
                     self.add_error(ctx, f"Función void '{func_name}' no debe retornar valor")
         
         # Restaurar ámbito padre
-        self.symbol_table.exit_scope() 
+        self.symbol_table.exit_scope()
         self.current_function = None
+
+        # Clear the current activation record so subsequent code is treated as global
+        self.codegen.current_ar = None
 
         # Si está dentro de clase y no es 'constructor', agregar a los métodos
         if self.current_class:

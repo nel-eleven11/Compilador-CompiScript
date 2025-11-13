@@ -66,7 +66,7 @@ class MIPSGenerator:
                 self.data_section.append(f"var_{var_name}: .word 0  # Address: {hex(address)}")
 
         # Add string literals
-        string_literals = self.code_generator.get_string_literals()
+        string_literals = self.cg.get_string_literals()
         if string_literals:
             self.data_section.append("# String literals")
             for string_value, label in string_literals.items():
@@ -243,33 +243,50 @@ class MIPSGenerator:
         # Result is always a temporary - allocate FIRST
         result_reg = self.register_allocator.get_reg(quad.result)
 
-        # Obtener registros para los operandos
-        # For arg1: use get_reg if it's a temporary, otherwise use first available temp
+        # IMPORTANT: Allocate registers for TEMPORARY operands FIRST
+        # This ensures they're marked as used before we pick registers for non-temporaries
+        arg1_reg = None
+        arg2_reg = None
+
         if self._is_temporary(quad.arg1):
             arg1_reg = self.register_allocator.get_reg(quad.arg1)
-        else:
-            # For non-temporaries, pick a specific temp register
-            # Try to find one that's not used by result
-            arg1_reg = None
-            for reg in ['$t0', '$t1', '$t2', '$t3', '$t4', '$t5', '$t6', '$t7', '$t8', '$t9']:
-                if reg != result_reg and reg not in self.register_allocator.used_regs:
-                    arg1_reg = reg
-                    break
-            if not arg1_reg:
-                arg1_reg = self.register_allocator.get_reg_temp("arg1")
-
-        # For arg2: use get_reg if it's a temporary, otherwise use different temp from arg1
         if self._is_temporary(quad.arg2):
             arg2_reg = self.register_allocator.get_reg(quad.arg2)
-        else:
-            # For non-temporaries, pick a DIFFERENT temp register from arg1
-            arg2_reg = None
+
+        # Now allocate for non-temporaries, avoiding already-allocated registers
+        if arg1_reg is None:
+            # arg1 is not a temporary, pick an available temp register
+            for reg in ['$t0', '$t1', '$t2', '$t3', '$t4', '$t5', '$t6', '$t7', '$t8', '$t9']:
+                if reg != result_reg and reg != arg2_reg and reg not in self.register_allocator.used_regs:
+                    arg1_reg = reg
+                    break
+            # If no temp register available, use $at (but not if arg2 is already using it)
+            if not arg1_reg:
+                if arg2_reg != '$at':
+                    arg1_reg = '$at'
+                elif arg2_reg != '$t9':
+                    # arg2 is using $at, so use $t9 if arg2 isn't using it
+                    arg1_reg = '$t9'
+                else:
+                    # Both $at and $t9 are taken, use $t8
+                    arg1_reg = '$t8'
+
+        if arg2_reg is None:
+            # arg2 is not a temporary, pick an available temp register different from arg1
             for reg in ['$t0', '$t1', '$t2', '$t3', '$t4', '$t5', '$t6', '$t7', '$t8', '$t9']:
                 if reg != result_reg and reg != arg1_reg and reg not in self.register_allocator.used_regs:
                     arg2_reg = reg
                     break
+            # If no temp register available, use $at (but not if arg1 is already using it)
             if not arg2_reg:
-                arg2_reg = self.register_allocator.get_reg_temp("arg2")
+                if arg1_reg != '$at':
+                    arg2_reg = '$at'
+                elif arg1_reg != '$t9':
+                    # arg1 is using $at, so use $t9 if arg1 isn't using it
+                    arg2_reg = '$t9'
+                else:
+                    # Both $at and $t9 are taken, use $t8
+                    arg2_reg = '$t8'
 
         # Cargar arg1 - CHECK MEMORY ADDRESS FIRST!
         if self._is_temporary(quad.arg1):
@@ -406,6 +423,10 @@ class MIPSGenerator:
             # Si target es temporal, mover a su registro (si es diferente)
             if value_reg != target_reg:
                 instructions.append(f"move {target_reg}, {value_reg}")
+        elif self._is_fp_relative(target):
+            # Target es FP-relative (local variable or parameter)
+            offset = self._extract_fp_offset(target)
+            instructions.append(f"sw {value_reg}, {offset}($fp)")
         elif isinstance(target, str) and target.startswith('0x'):
             # Target es una dirección de memoria
             try:
@@ -800,7 +821,8 @@ class MIPSGenerator:
                 # Ya está en registro
                 pass
             elif self._is_immediate(condition):
-                instructions.append(f"li {cond_reg}, {condition}")
+                normalized = self._normalize_value(condition)
+                instructions.append(f"li {cond_reg}, {normalized}")
             else:
                 # Es una variable
                 addr = self._get_memory_label(condition)
@@ -823,7 +845,8 @@ class MIPSGenerator:
                 # Ya está en registro
                 pass
             elif self._is_immediate(condition):
-                instructions.append(f"li {cond_reg}, {condition}")
+                normalized = self._normalize_value(condition)
+                instructions.append(f"li {cond_reg}, {normalized}")
             else:
                 # Es una variable
                 addr = self._get_memory_label(condition)
@@ -889,15 +912,29 @@ class MIPSGenerator:
             instructions.append("syscall")
 
         elif quad.op == 'print_str':
-            # Para strings, necesitamos la etiqueta en .data
-            # Por ahora, implementamos soporte básico
-            if isinstance(value, str) and value.startswith('"') and value.endswith('"'):
-                # Es un literal string - necesitamos crear una etiqueta en .data
-                # Por ahora, retornamos un placeholder
-                instructions.append(f"# TODO: Print string literal {value}")
+            # Para strings, el valor es una etiqueta (ej: str_0) o un temporal que contiene una etiqueta
+            if self._is_temporary(value):
+                # Es un temporal que contiene la dirección del string
+                value_reg = self.register_allocator.get_reg(value)
+                instructions.append(f"move $a0, {value_reg}")
+            elif isinstance(value, str) and value.startswith('str_'):
+                # Es una etiqueta de string literal directamente
+                instructions.append(f"la $a0, {value}")
+            elif self._is_fp_relative(value):
+                # Es una variable local (FP[offset])
+                offset = self._extract_fp_offset(value)
+                instructions.append(f"lw $a0, {offset}($fp)")
+            elif isinstance(value, str) and value.startswith('0x'):
+                # Es una dirección de memoria global
+                var_label = self._get_memory_label(value)
+                instructions.append(f"lw $a0, {var_label}")
             else:
-                # Es una variable string
-                instructions.append(f"# TODO: Print string variable {value}")
+                # Cualquier otro caso - asumir que es una etiqueta
+                instructions.append(f"la $a0, {value}")
+
+            # Syscall para imprimir string
+            instructions.append("li $v0, 4       # print_str")
+            instructions.append("syscall")
 
         return instructions
 
@@ -1241,6 +1278,9 @@ class MIPSGenerator:
             # Es un inmediato (número o booleano)
             normalized = self._normalize_value(value)
             instructions.append(f"li {reg}, {normalized}")
+        elif isinstance(value, str) and value.startswith('str_'):
+            # Es una etiqueta de string literal - cargar DIRECCIÓN (la), no valor (lw)
+            instructions.append(f"la {reg}, {value}  # Load string address")
         else:
             # Es una variable, cargar desde memoria
             addr = self._get_memory_label(value)
