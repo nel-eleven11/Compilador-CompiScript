@@ -145,8 +145,9 @@ def compile_current_code() -> None:
         st.session_state.last_errors = result.get("errors", [])
         st.session_state.symbols = result.get("symbols", [])
         st.session_state.quadruples = result.get("quadruples", [])
+        st.session_state.mips_code = result.get("mips_code", "")
 
-        st.session_state.output_text = "Compilación finalizada. Revisa Árbol, Errores, Tabla de Símbolos, Mensajes y Código Intermedio."
+        st.session_state.output_text = "Compilación finalizada. Revisa Árbol, Errores, Tabla de Símbolos, Mensajes, Código Intermedio y Código ASM MIPS.."
         st.session_state.locked = True
         st.session_state.last_compile_ok = True
 
