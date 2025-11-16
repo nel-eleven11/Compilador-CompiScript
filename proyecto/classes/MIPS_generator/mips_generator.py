@@ -1022,6 +1022,18 @@ class MIPSGenerator:
         # Obtener el valor a almacenar DESPUÉS (to avoid overwriting addr_reg)
         if self._is_temporary(value):
             value_reg = self.register_allocator.get_reg(value)
+        elif self._is_fp_relative(value):
+            # value es algo como FP[4] o FP[8]: está relativo a $fp
+            value_reg = None
+            for reg in ['$t0', '$t1', '$t2', '$t3', '$t4', '$t5', '$t6', '$t7', '$t8', '$t9', '$at']:
+                if reg != addr_reg:
+                    value_reg = reg
+                    break
+            if not value_reg:
+                value_reg = '$at'
+
+            offset = self._extract_fp_offset(value)
+            instructions.append(f"lw {value_reg}, {offset}($fp)  # Load from frame")
         elif self._is_immediate(value):
             # Use a different register than addr_reg
             value_reg = None

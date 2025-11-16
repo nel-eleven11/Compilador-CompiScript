@@ -10,8 +10,8 @@ class Persona {
   let color: string;
 
   function constructor(nombre: string, edad: integer) {
-    this.nombre = "juan;
-    this.edad = 12;
+    this.nombre = nombre;
+    this.edad = edad;
     this.color = "rojo";
   }
 
@@ -26,10 +26,7 @@ class Persona {
 }
 
 // Programa principal
-let log: string = "";
-
 let nombre: string = "Nelson";
-let color: string = "Verde";
 let nelson: Estudiante = new Persona(nombre, 22);
-print(nelson.saludar())
+print(nelson.saludar());
 
