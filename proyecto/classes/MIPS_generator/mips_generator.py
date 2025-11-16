@@ -238,6 +238,10 @@ class MIPSGenerator:
         if quad.op == '+' and self._might_be_string_concat(quad.arg1, quad.arg2):
             return self._translate_string_concat(quad)
 
+        # Acceso a objeto (dirección de atributo): (+, base, offset, result) 'Address of ...'
+        if self._is_object_address_quad(quad):
+            return self._translate_object_access(quad)
+
         # Mapeo de operadores TAC a MIPS
         mips_ops = {
             '+': 'add',
@@ -1133,15 +1137,13 @@ class MIPSGenerator:
 
         elif quad.op == 'call':
             # Call function
-            func_label = self._sanitize_label(quad.result)
-
             instructions.append(f"# Call function: {quad.result}")
 
-            # In MIPS calling convention, first 4 args go in $a0-$a3
-            # For simplicity, we're using stack-based passing (already pushed)
-            # But we could optimize by using $a0-$a3 for first 4 args
-
-            instructions.append(f"jal {func_label}")
+            call_instrs = self._translate_method_call(quad)
+            if isinstance(call_instrs, str):
+                instructions.append(call_instrs)
+            else:
+                instructions.extend(call_instrs)
 
             # Clear param register tracking
             self.param_registers.clear()
@@ -1649,3 +1651,44 @@ class MIPSGenerator:
         with open(filename, 'w') as f:
             f.write(code)
         return filename
+
+    # --- Objetos y métodos (Etapa 3) ---
+
+    def _is_object_address_quad(self, quad) -> bool:
+        """
+        Detecta cuádruplos que calculan la dirección de un atributo de objeto.
+        Patrón en TAC: (+, <baseTemp>, <offset>, <resultTemp>) con comment que incluye 'Address of'.
+        """
+        try:
+            return quad.op == '+' and quad.comment and ('Address of' in str(quad.comment))
+        except AttributeError:
+            return False
+
+    def _translate_object_access(self, quad):
+        """
+        Traduce: result = base + offset   (dirección efectiva de un atributo de objeto)
+        Emite:   addiu result_reg, base_reg, <offset>
+        """
+        # arg1: temporal con la base (puntero a la instancia)
+        base_reg = self.register_allocator.get_reg(quad.arg1)
+        # result: temporal destino para la dirección resultante
+        result_reg = self.register_allocator.get_reg(quad.result)
+
+        # offset inmediato (ej. 8 para Estudiante.edad)
+        offset_imm = str(quad.arg2)
+
+        instr = []
+        if getattr(quad, "comment", None):
+            instr.append(f"# {quad.comment}")
+        instr.append(f"addiu {result_reg}, {base_reg}, {offset_imm}")
+        return instr
+
+    def _translate_method_call(self, quad):
+        """
+        Traduce llamadas a métodos:
+        TAC: (call, None, None, FUNC_<...>)
+        MIPS: jal <label>
+        """
+        label = self._sanitize_label(quad.result)
+        return [f"jal {label}"]
+

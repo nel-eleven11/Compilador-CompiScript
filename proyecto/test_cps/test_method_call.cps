@@ -8,3 +8,5 @@ class Calculator {
 
 let calc: Calculator = new Calculator();
 let result: integer = calc.add(5, 10);
+
+print(result);
