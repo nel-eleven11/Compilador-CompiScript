@@ -234,13 +234,13 @@ class MIPSGenerator:
         """
         instructions = []
 
-        # Check if this is string concatenation (+ operator with string operands)
-        if quad.op == '+' and self._might_be_string_concat(quad.arg1, quad.arg2):
-            return self._translate_string_concat(quad)
-
         # Acceso a objeto (dirección de atributo): (+, base, offset, result) 'Address of ...'
         if self._is_object_address_quad(quad):
             return self._translate_object_access(quad)
+
+        # Check if this is string concatenation (+ operator with string operands)
+        if quad.op == '+' and self._might_be_string_concat(quad.arg1, quad.arg2):
+            return self._translate_string_concat(quad)
 
         # Mapeo de operadores TAC a MIPS
         mips_ops = {
@@ -1671,29 +1671,47 @@ class MIPSGenerator:
         Detecta cuádruplos que calculan la dirección de un atributo de objeto.
         Patrón en TAC: (+, <baseTemp>, <offset>, <resultTemp>) con comment que incluye 'Address of'.
         """
-        try:
-            return quad.op == '+' and quad.comment and ('Address of' in str(quad.comment))
-        except AttributeError:
-            return False
+        return (
+            quad.op == '+'
+            and isinstance(getattr(quad, "comment", None), str)
+            and "Address of" in quad.comment
+        )
 
     def _translate_object_access(self, quad):
         """
-        Traduce: result = base + offset   (dirección efectiva de un atributo de objeto)
-        Emite:   addiu result_reg, base_reg, <offset>
+        Traduce acceso a objetos como:
+        (+, t72, 8, t73)  # Address of Clase.campo
+        En el caso normal (métodos), arg1 es un temporal que ya contiene
+        el puntero al objeto (__this).
+        En el constructor, el front-end genera algo como:
+        (+, FP[4], 0, t0)  # Address of Persona.nombre
+        donde el puntero real al objeto está en FP[0].
         """
-        # arg1: temporal con la base (puntero a la instancia)
-        base_reg = self.register_allocator.get_reg(quad.arg1)
-        # result: temporal destino para la dirección resultante
+        instructions = []
+
+        # Comentario informativo
+        if isinstance(getattr(quad, "comment", None), str):
+            instructions.append(f"# {quad.comment}")
+
+        offset = quad.arg2 or 0
+
+        # Determinar el registro base del objeto
+        if isinstance(quad.arg1, str) and quad.arg1.startswith("FP["):
+            # Caso constructor: ignoramos FP[4]/FP[8]/... como base
+            # y usamos siempre el puntero __this almacenado en FP[0]
+            base_reg = self.register_allocator.get_reg("__this_base")
+            instructions.append(f"lw {base_reg}, 0($fp)  # load __this pointer (constructor)")
+        else:
+            # Caso normal: arg1 es un temporal que ya tiene el puntero al objeto
+            base_reg = self.register_allocator.get_reg(quad.arg1)
+
+        # Registro resultado: dirección del campo
         result_reg = self.register_allocator.get_reg(quad.result)
 
-        # offset inmediato (ej. 8 para Estudiante.edad)
-        offset_imm = str(quad.arg2)
+        instructions.append(f"addiu {result_reg}, {base_reg}, {offset}")
 
-        instr = []
-        if getattr(quad, "comment", None):
-            instr.append(f"# {quad.comment}")
-        instr.append(f"addiu {result_reg}, {base_reg}, {offset_imm}")
-        return instr
+        return instructions
+
 
     def _translate_method_call(self, quad):
         """

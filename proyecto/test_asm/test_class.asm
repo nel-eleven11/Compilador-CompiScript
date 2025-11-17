@@ -58,6 +58,7 @@ FUNC_constructor_Persona:
 
 # Quadruple 7: (+, FP[4], 0, t0)  # Address of Persona.nombre
     # Address of Persona.nombre
+    lw $t1, 0($fp)  # load __this pointer (constructor)
     addiu $t0, $t1, 0
 
 # Quadruple 8: ([]=, FP[4], None, t0)  # Store Persona.nombre
@@ -66,21 +67,22 @@ FUNC_constructor_Persona:
 
 # Quadruple 9: (+, FP[8], 8, t1)  # Address of Persona.edad
     # Address of Persona.edad
-    addiu $t3, $t2, 8
+    lw $t1, 0($fp)  # load __this pointer (constructor)
+    addiu $t2, $t1, 8
 
 # Quadruple 10: ([]=, FP[8], None, t1)  # Store Persona.edad
     lw $t0, 8($fp)  # Load from frame
-    sw $t0, 0($t3)  # Array store
+    sw $t0, 0($t2)  # Array store
 
 # Quadruple 11: (=, str_1, None, t2)
-    la $t4, str_1  # Load string address
+    la $t3, str_1  # Load string address
 
 # Quadruple 12: (+, t2, 12, t3)  # Address of Persona.color
     # Address of Persona.color
-    addiu $t5, $t4, 12
+    addiu $t4, $t3, 12
 
 # Quadruple 13: ([]=, t2, None, t3)  # Store Persona.color
-    sw $t4, 0($t5)  # Array store
+    sw $t3, 0($t4)  # Array store
 
 # Quadruple 14: (return, None, None, None)
     # Return statement
@@ -107,21 +109,21 @@ FUNC_saludar_Persona:
     la $t0, str_2  # Load string address
 
 # Quadruple 19: (@, FP[0], None, t1)  # Load __this pointer
-    lw $t3, 0($fp)  # Load from frame
+    lw $t2, 0($fp)  # Load from frame
 
 # Quadruple 20: (+, t1, 0, t2)  # Address of Persona.nombre
     # Address of Persona.nombre
-    addiu $t4, $t3, 0
+    addiu $t3, $t2, 0
 
 # Quadruple 21: ([], t2, None, t3)  # Load Persona.nombre
-    lw $t5, 0($t4)  # Array load
+    lw $t4, 0($t3)  # Array load
 
 # Quadruple 22: (+, t0, t3, t4)
-    add $t6, $t0, $t5
+    add $t5, $t0, $t4
 
 # Quadruple 23: (return, t4, None, None)
     # Return statement
-    move $v0, $t6
+    move $v0, $t5
 
 # Quadruple 24: (leave, None, None, None)
     # Function epilogue
@@ -146,47 +148,47 @@ FUNC_incrementarEdad_Persona:
 
 # Quadruple 28: (+, t0, 8, t1)  # Address of Persona.edad
     # Address of Persona.edad
-    addiu $t3, $t0, 8
+    addiu $t2, $t0, 8
 
 # Quadruple 29: ([], t1, None, t2)  # Load Persona.edad
-    lw $t4, 0($t3)  # Array load
+    lw $t3, 0($t2)  # Array load
 
 # Quadruple 30: (+, t2, FP[4], t3)
-    lw $t7, 4($fp)  # Load from frame
-    add $t5, $t4, $t7
+    lw $t6, 4($fp)  # Load from frame
+    add $t4, $t3, $t6
 
 # Quadruple 31: (+, t3, 8, t4)  # Address of Persona.edad
     # Address of Persona.edad
-    addiu $t6, $t5, 8
+    addiu $t5, $t4, 8
 
 # Quadruple 32: ([]=, t3, None, t4)  # Store Persona.edad
-    sw $t5, 0($t6)  # Array store
+    sw $t4, 0($t5)  # Array store
 
 # Quadruple 33: (=, str_3, None, t5)
-    la $t7, str_3  # Load string address
+    la $t6, str_3  # Load string address
 
 # Quadruple 34: (@, FP[0], None, t6)  # Load __this pointer
-    lw $t8, 0($fp)  # Load from frame
+    lw $t7, 0($fp)  # Load from frame
 
 # Quadruple 35: (+, t6, 8, t7)  # Address of Persona.edad
     # Address of Persona.edad
-    addiu $t9, $t8, 8
+    addiu $t8, $t7, 8
 
 # Quadruple 36: ([], t7, None, t8)  # Load Persona.edad
-    lw $s0, 0($t9)  # Array load
+    lw $t9, 0($t8)  # Array load
 
 # Quadruple 37: (+, t5, t8, t9)
-    add $s1, $t7, $s0
+    add $s0, $t6, $t9
 
 # Quadruple 38: (=, str_4, None, t10)
-    la $s2, str_4  # Load string address
+    la $s1, str_4  # Load string address
 
 # Quadruple 39: (+, t9, t10, t11)
-    add $s3, $s1, $s2
+    add $s2, $s0, $s1
 
 # Quadruple 40: (return, t11, None, None)
     # Return statement
-    move $v0, $s3
+    move $v0, $s2
 
 # Quadruple 41: (leave, None, None, None)
     # Function epilogue
@@ -206,7 +208,7 @@ main:
     sw $t9, var_nombre
 
     # Quadruple 43: (=, 0x8000, None, t12)
-    la $s4, 0x8000  # Load array address
+    la $s3, 0x8000  # Load array address
 
     # Quadruple 44: (push, 22, None, None)
     # Push argument: 22
@@ -223,7 +225,7 @@ main:
     # Quadruple 46: (push, t12, None, None)  # Push __this (será FP[0])
     # Push argument: t12
     addiu $sp, $sp, -4
-    sw $s4, 0($sp)
+    sw $s3, 0($sp)
 
     # Quadruple 47: (call, None, None, FUNC_constructor (Persona))  # Call Persona.constructor
     # Call function: FUNC_constructor (Persona)
@@ -235,10 +237,10 @@ main:
 
     # Quadruple 49: (pop, None, None, t13)
     # Get return value
-    move $s5, $v0
+    move $s4, $v0
 
     # Quadruple 50: (=, t12, None, 0x1008)
-    sw $s4, var_nelson
+    sw $s3, var_nelson
 
     # Quadruple 51: (push, 0x1008, None, None)  # Push __this (será FP[0])
     # Push argument: 0x1008
@@ -256,10 +258,10 @@ main:
 
     # Quadruple 54: (pop, None, None, t12)
     # Get return value
-    move $s4, $v0
+    move $s3, $v0
 
     # Quadruple 55: (print_str, t12, None, None)  # Print string
-    move $a0, $s4
+    move $a0, $s3
     li $v0, 4       # print_str
     syscall
 
