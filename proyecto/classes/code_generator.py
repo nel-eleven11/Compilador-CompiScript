@@ -814,6 +814,19 @@ class CodeGenerator:
         return {'func_label': func_label, 'ar_design': ar_design}
 
 
+    def generate_toString_call(self, value_temp):
+        """
+        Genera código para llamar a toString(value_temp)
+        Usado para conversión implícita de integer a string en concatenaciones
+
+        Args:
+            value_temp: Temporal que contiene el valor integer a convertir
+
+        Returns:
+            Temporal que contiene el resultado string de toString()
+        """
+        return self.generate_function_call('toString', [value_temp])
+
     def generate_function_call(self, function_name, arguments, ctx=None):
         """
         Genera código para llamadas a funciones

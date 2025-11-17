@@ -129,23 +129,52 @@ class SemanticVisitor(CompiscriptVisitor):
         op = operator.getText() if hasattr(operator, 'getText') else operator
 
         # Caso concatenación: operador + con strings
-        if op == '+' and left_type == STRING_TYPE and right_type == STRING_TYPE:
-            result_type = STRING_TYPE
-            self.validate_semantic_expression(ctx, result_type, 'concatenation', [left_type, right_type])
-            return result_type
-            
-        # Caso suma aritmética
-        if op == '+' or op == '-':
-            if left_type == INT_TYPE and right_type == INT_TYPE:
+        if op == '+':
+            # If both are strings, simple concatenation
+            if left_type == STRING_TYPE and right_type == STRING_TYPE:
+                result_type = STRING_TYPE
+                self.validate_semantic_expression(ctx, result_type, 'concatenation', [left_type, right_type])
+                return result_type
+
+            # If one is string and the other is integer, we need to insert toString()
+            # This handles implicit conversion for string concatenation
+            elif (left_type == STRING_TYPE and right_type == INT_TYPE):
+                # Right side needs toString conversion
+                # Generate call to toString(right_temp)
+                # NOTE: toString function must exist in the compiled program
+                result_type = STRING_TYPE
+                self.validate_semantic_expression(ctx, result_type, 'concatenation', [left_type, right_type])
+                return result_type
+
+            elif (left_type == INT_TYPE and right_type == STRING_TYPE):
+                # Left side needs toString conversion
+                result_type = STRING_TYPE
+                self.validate_semantic_expression(ctx, result_type, 'concatenation', [left_type, right_type])
+                return result_type
+
+            # If both are integers, it's arithmetic addition
+            elif left_type == INT_TYPE and right_type == INT_TYPE:
                 result_type = INT_TYPE
-                operation_name = 'add' if op == '+' else 'subtract'
-                self.validate_semantic_expression(ctx, result_type, operation_name)
+                self.validate_semantic_expression(ctx, result_type, 'add')
                 return result_type
             else:
                 left_name = left_type.name
                 right_name = right_type.name
-                self.add_error(ctx, 
-                    f"Operación '{op}' requiere operandos integer, got {left_name} y {right_name}")
+                self.add_error(ctx,
+                    f"Operación '+' no soportada para tipos {left_name} y {right_name}")
+                return ERROR_TYPE
+
+        # Caso resta aritmética (solo integers)
+        if op == '-':
+            if left_type == INT_TYPE and right_type == INT_TYPE:
+                result_type = INT_TYPE
+                self.validate_semantic_expression(ctx, result_type, 'subtract')
+                return result_type
+            else:
+                left_name = left_type.name
+                right_name = right_type.name
+                self.add_error(ctx,
+                    f"Operación '-' requiere operandos integer, got {left_name} y {right_name}")
                 return ERROR_TYPE
 
         # Operador no reconocido
@@ -179,15 +208,30 @@ class SemanticVisitor(CompiscriptVisitor):
             result_type = self.check_additive_operation(
                 left_type, right_type, operator, right_expr
             )
-            
+
             if result_type != ERROR_TYPE:
                 op_text = operator.getText()
+
+                # Handle implicit toString() conversion for string concatenation
+                actual_left = left_temp
+                actual_right = right_temp
+
+                if op_text == '+':
+                    # If left is int and right is string, convert left to string
+                    if left_type == INT_TYPE and right_type == STRING_TYPE:
+                        # Generate call to toString(left_temp)
+                        actual_left = self.codegen.generate_toString_call(left_temp)
+                    # If left is string and right is int, convert right to string
+                    elif left_type == STRING_TYPE and right_type == INT_TYPE:
+                        # Generate call to toString(right_temp)
+                        actual_right = self.codegen.generate_toString_call(right_temp)
+
                 result_temp = self.codegen.generate_arithmetic_operation(
-                    left_temp, right_temp, op_text, ctx
+                    actual_left, actual_right, op_text, ctx
                 )
                 left_temp = result_temp
                 self.codegen.current_temp = result_temp
-            
+
             left_type = result_type
         
         return left_type
@@ -678,7 +722,11 @@ class SemanticVisitor(CompiscriptVisitor):
             # SOLUCIÓN: Visitar value PRIMERO, guardar su temporal
             value_type = self.visit(value_expr)
             value_temp = self.codegen.current_temp  # Guardar INMEDIATAMENTE
-            
+
+            # CRITICAL FIX: Mark value_temp as used to prevent it from being
+            # reused when we visit the base expression
+            self.codegen.mark_temp_used(value_temp)
+
             # AHORA sí visitar base (puede ser 'this' o una variable)
             base_type = self.visit(base_expr)
             base_temp = self.codegen.current_temp
@@ -944,7 +992,7 @@ class SemanticVisitor(CompiscriptVisitor):
         parent_ctx = ctx.parentCtx
         if not parent_ctx or not hasattr(parent_ctx, 'primaryAtom'):
             return ERROR_TYPE
-            
+
         func_name = parent_ctx.primaryAtom().getText()
         func_symbol = self.symbol_table.lookup(func_name)
         
@@ -1376,11 +1424,11 @@ class SemanticVisitor(CompiscriptVisitor):
         if not self.current_class:
             self.add_error(ctx, "Uso de 'this' fuera de una clase")
             return ERROR_TYPE
-        
+
         # CAMBIO: Usar el helper para cargar 'this'
         tmp = self.codegen.load_this_pointer(ctx)
         self.codegen.current_temp = tmp
-        
+
         return self._class_type(self.current_class.name)
 
 
@@ -1667,6 +1715,9 @@ class SemanticVisitor(CompiscriptVisitor):
                 self.add_error(base, "Uso de 'this' fuera de una clase")
                 return ERROR_TYPE
             current_type = self._class_type(self.current_class.name)
+            # CRITICAL FIX: Generate code to load the this pointer!
+            tmp = self.codegen.load_this_pointer(base)
+            self.codegen.current_temp = tmp
 
         else:
             return self.visitChildren(ctx)
@@ -1679,18 +1730,27 @@ class SemanticVisitor(CompiscriptVisitor):
 
             # Llamada: (...)
             if isinstance(s, CompiscriptParser.CallExprContext):
-                args = []
+                arg_types = []
+                arg_temps = []
                 if s.arguments():
                     for e in s.arguments().expression():
-                        args.append(self.visit(e))
+                        arg_type = self.visit(e)
+                        arg_types.append(arg_type)
+                        arg_temps.append(self.codegen.current_temp)
 
                 if pending_func:
-                    if len(args) != len(pending_func.parameters):
-                        self.add_error(s, f"Función '{pending_func.name}' espera {len(pending_func.parameters)} argumentos, recibió {len(args)}")
+                    if len(arg_types) != len(pending_func.parameters):
+                        self.add_error(s, f"Función '{pending_func.name}' espera {len(pending_func.parameters)} argumentos, recibió {len(arg_types)}")
                     else:
-                        for j, (p, a) in enumerate(zip(pending_func.parameters, args), start=1):
+                        for j, (p, a) in enumerate(zip(pending_func.parameters, arg_types), start=1):
                             if a != ERROR_TYPE and not a.can_assign_to(p.type):
                                 self.add_error(s, f"Argumento {j} de '{pending_func.name}': esperado {p.type.name}, encontrado {a.name}")
+
+                    # CRITICAL FIX: Generate the function call TAC code!
+                    if not self.errors:
+                        result_temp = self.codegen.generate_function_call(pending_func.name, arg_temps, s)
+                        self.codegen.current_temp = result_temp
+
                     current_type = pending_func.return_type
                     pending_func = None
                 else:

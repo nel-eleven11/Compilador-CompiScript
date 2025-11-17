@@ -4,6 +4,7 @@ from CompiscriptLexer import CompiscriptLexer
 from CompiscriptParser import CompiscriptParser
 from semantic_visitor import SemanticVisitor
 from antlr4.tree.Trees import Trees
+from classes.MIPS_generator import MIPSGenerator
 import json
 
 def tree_to_json(node, parser, lexer=None):
@@ -134,14 +135,28 @@ def _run_common(input_stream, ast_path="ast.json"):
 
     quadruples_json = _serialize_quadruples(analyzer.codegen.get_quadruples())
 
-    # resultados
+    # Resultados
     errors = list(getattr(analyzer, "errors", []))
     if not errors:
         print("\nAnálisis semántico completado sin errores")
-    
+
     symbols_json = _serialize_symbol_table(analyzer.symbol_table)
 
-    return {"ast": ast_json, "errors": errors, "symbols": symbols_json, "quadruples": quadruples_json,}
+    # Generar código MIPS si no hay errores
+    mips_code = ""
+    if not errors:
+        mips_gen = MIPSGenerator(analyzer.codegen, analyzer.symbol_table)
+        mips_code = mips_gen.generate_mips_code()
+        print("\n=== CÓDIGO MIPS GENERADO ===\n")
+        print(mips_code)
+
+    return {
+        "ast": ast_json,
+        "errors": errors,
+        "symbols": symbols_json,
+        "quadruples": quadruples_json,
+        "mips_code": mips_code,
+    }
 
 
 def run_from_text(source_code: str, ast_path="ast.json"):
