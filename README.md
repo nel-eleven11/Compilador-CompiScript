@@ -18,6 +18,8 @@ antlr4 -Dlanguage=Python3 Compiscript.g4 -visitor -no-listener
 
 ### Correr el IDE
 
+Desde la carpet ide:
+
 ```bash
 streamlit run ide.py
 ```
@@ -233,7 +235,7 @@ python main2.py test_cps/mi_programa.cps
    - Control de flujo
    - Asignación de registros
    - Manejo de variables globales
-5. **Funciones y Llamadas** (Etapa 2) ✅ **COMPLETADO**
+5. **Funciones y Llamadas** (Etapa 2) **COMPLETADO**
    - Traducción completa de cuádruplos `enter`, `leave`, `push`, `call`, `pop`, `return`
    - Implementación de stack frames con FP (frame pointer)
    - Manejo de argumentos vía stack
@@ -269,29 +271,6 @@ python main2.py test_cps/mi_programa.cps
    **Impacto medido**:
    - `test_simple_opt.cps`: 6 → 4 cuádruplos (33% reducción)
    - `test_complete_basic.cps`: 58 → 34 cuádruplos (41% reducción)
-
-### En Progreso / Pendiente
-
-1. **Optimización de Código Intermedio Adicional**
-   - Reutilización más agresiva de temporales
-   - Eliminación de código muerto
-   - Propagación de constantes
-
-2. **Clases y Objetos (Etapa 3)**
-   - Acceso a atributos de objetos
-   - Llamadas a métodos
-   - Herencia
-   - Manejo de punteros this
-
-4. **Arrays y Strings**
-   - Acceso indexado a arrays
-   - Operaciones con strings
-   - Concatenación
-
-5. **Optimizaciones MIPS**
-   - Mejor uso de registros
-   - Eliminación de cargas/stores redundantes
-   - Optimización de saltos
 
 ---
 

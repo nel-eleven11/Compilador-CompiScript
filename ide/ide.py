@@ -77,6 +77,8 @@ if "editor_widget" not in st.session_state:
     st.session_state.editor_widget = st.session_state.code_input
 if "quadruples" not in st.session_state:
     st.session_state.quadruples = []
+if "mips_code" not in st.session_state:
+    st.session_state.mips_code = ""
 
 # ---------- Utilidades ----------
 def ensure_grammar_generated() -> str:
@@ -143,8 +145,9 @@ def compile_current_code() -> None:
         st.session_state.last_errors = result.get("errors", [])
         st.session_state.symbols = result.get("symbols", [])
         st.session_state.quadruples = result.get("quadruples", [])
+        st.session_state.mips_code = result.get("mips_code", "")
 
-        st.session_state.output_text = "Compilación finalizada. Revisa Árbol, Errores, Tabla de Símbolos, Mensajes y Código Intermedio."
+        st.session_state.output_text = "Compilación finalizada. Revisa Árbol, Errores, Tabla de Símbolos, Mensajes, Código Intermedio y Código ASM MIPS.."
         st.session_state.locked = True
         st.session_state.last_compile_ok = True
 
@@ -211,14 +214,14 @@ with c3:
 try:
     vista = st.segmented_control(
         "Vista",
-        options=["Código", "Árbol Sintáctico", "Errores", "Tabla de Símbolos", "Mensajes", "Código Intermedio"],
+        options=["Código", "Árbol Sintáctico", "Errores", "Tabla de Símbolos", "Mensajes", "Código Intermedio", "Código MIPS"],
         default=st.session_state.vista,
     )
 except Exception:
     vista = st.radio(
         "Vista",
         ["Código", "Árbol Sintáctico", "Errores", "Tabla de Símbolos", "Mensajes", "Código Intermedio"],
-        index=["Código", "Árbol Sintáctico", "Errores", "Tabla de Símbolos", "Mensajes", "Código Intermedio"].index(st.session_state.vista),
+        index=["Código", "Árbol Sintáctico", "Errores", "Tabla de Símbolos", "Mensajes", "Código Intermedio", "Código MIPS"].index(st.session_state.vista),
         horizontal=True,
     )
 st.session_state.vista = vista
@@ -328,4 +331,13 @@ elif vista == "Código Intermedio":
         ]
         st.text_area("Código intermedio generado", value="\n".join(lines), height=380, disabled=True)
     st.caption("El mapa de memoria aparece en la vista 'Mensajes' junto con el resto del log.")
+
+elif vista == "Código MIPS":
+    st.subheader("Código MIPS")
+    mips = st.session_state.get("mips_code", "")
+    if not mips:
+        st.info("Aún no hay código MIPS. Compila primero.")
+    else:
+        st.text_area("Código MIPS generado", value=mips, height=380, disabled=True)
+
 

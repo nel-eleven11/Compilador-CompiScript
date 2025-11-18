@@ -127,7 +127,7 @@ def _run_common(input_stream, ast_path="ast.json"):
     analyzer = SemanticVisitor()
     analyzer.visit(tree)
 
-    #Código intermedio
+    # Código intermedio (cuadruplos)
     print("\n")
     analyzer.codegen.print_quadruples()
     print("\n")
