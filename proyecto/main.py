@@ -139,7 +139,7 @@ def _run_common(input_stream, ast_path="ast.json"):
     errors = list(getattr(analyzer, "errors", []))
     if not errors:
         print("\nAnálisis semántico completado sin errores")
-    
+
     symbols_json = _serialize_symbol_table(analyzer.symbol_table)
 
     # Generar código MIPS si no hay errores
