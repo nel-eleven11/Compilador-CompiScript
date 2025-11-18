@@ -191,7 +191,7 @@ class MIPSGenerator:
         self.text_section.append("sw $a0, 0($sp)")
         self.text_section.append("sw $v0, 4($sp)")
         self.text_section.append("li $v0, 9  # sbrk for concat buffer")
-        self.text_section.append("li $a0, 3670016  # 3.5MB - max for MARS")
+        self.text_section.append("li $a0, 65536  # 64KB - not used much anymore")
         self.text_section.append("syscall")
         self.text_section.append("la $a0, string_concat_buffer")
         self.text_section.append("sw $v0, 0($a0)  # Store buffer pointer")
@@ -2008,82 +2008,88 @@ class MIPSGenerator:
         result_reg = self.register_allocator.get_reg(result)
 
         # First, allocate separate stack space for arg values (before saving working regs)
-        # IMPORTANT: We MUST reload values from their source instead of trusting register contents
-        # because registers may have been reallocated to other temporaries since the original assignment
+        # CRITICAL STRATEGY: Save register-based args FIRST, then load literals
+        # This prevents literals from clobbering registers that hold arg values
         instructions.append(f"# Reserve stack space for arg values")
         instructions.append(f"addiu $sp, $sp, -8")
 
-        # Get arg1 value and save to stack
-        # ALWAYS reload from source to avoid register aliasing bugs
-        instructions.append(f"# Load arg1 value (reload from source)")
+        # Determine if each arg needs to be saved from a register or loaded from a literal
+        arg1_is_in_reg = False
+        arg1_reg = None
+        arg1_needs_literal_load = False
+        arg1_literal = None
+
         if self._is_temporary(arg1):
-            # For temporaries, check if we know the source value AND it's a string literal
-            # If so, reload from source instead of trusting the register
             if arg1 in self.temp_value_source:
                 source_value = self.temp_value_source[arg1]
-                # Only reload if it's a string literal (starts with "str_")
-                # For other sources (heap addresses, computed values), trust the register
                 if isinstance(source_value, str) and source_value.startswith('str_'):
-                    instructions.append(f"# Reload {arg1} from string literal: {source_value}")
-                    self._load_string_address(source_value, '$a0', instructions)
-                    instructions.append(f"sw $a0, 0($sp)")
+                    arg1_needs_literal_load = True
+                    arg1_literal = source_value
                 elif arg1 in self.register_allocator.temp_to_reg:
-                    # Source is not a string literal - trust the register
+                    arg1_is_in_reg = True
                     arg1_reg = self.register_allocator.temp_to_reg[arg1]
-                    instructions.append(f"sw {arg1_reg}, 0($sp)  # Save arg1 ({arg1} in {arg1_reg})")
-                else:
-                    instructions.append(f"# ERROR: {arg1} not in register allocator!")
-                    instructions.append(f"li $a0, 0")
-                    instructions.append(f"sw $a0, 0($sp)")
             elif arg1 in self.register_allocator.temp_to_reg:
-                # No source tracking - trust the register (may be clobbered!)
+                arg1_is_in_reg = True
                 arg1_reg = self.register_allocator.temp_to_reg[arg1]
-                instructions.append(f"sw {arg1_reg}, 0($sp)  # Save arg1 ({arg1} in {arg1_reg})")
-            else:
-                # Temporary not in a register yet - this shouldn't happen for string concat args
-                instructions.append(f"# ERROR: {arg1} not in register allocator!")
-                instructions.append(f"li $a0, 0")
-                instructions.append(f"sw $a0, 0($sp)")
         else:
-            # Load non-temporary arg1 - temporarily use $a0 which is safe
-            # This correctly handles string literals, variables, etc.
-            self._load_string_address(arg1, '$a0', instructions)
-            instructions.append(f"sw $a0, 0($sp)")
+            arg1_needs_literal_load = True
+            arg1_literal = arg1
 
-        # Get arg2 value and save to stack
-        instructions.append(f"# Load arg2 value (reload from source)")
+        arg2_is_in_reg = False
+        arg2_reg = None
+        arg2_needs_literal_load = False
+        arg2_literal = None
+
         if self._is_temporary(arg2):
-            # For temporaries, check if we know the source value AND it's a string literal
-            # If so, reload from source instead of trusting the register
             if arg2 in self.temp_value_source:
                 source_value = self.temp_value_source[arg2]
-                # Only reload if it's a string literal (starts with "str_")
-                # For other sources (heap addresses, computed values), trust the register
                 if isinstance(source_value, str) and source_value.startswith('str_'):
-                    instructions.append(f"# Reload {arg2} from string literal: {source_value}")
-                    self._load_string_address(source_value, '$a0', instructions)
-                    instructions.append(f"sw $a0, 4($sp)")
+                    arg2_needs_literal_load = True
+                    arg2_literal = source_value
                 elif arg2 in self.register_allocator.temp_to_reg:
-                    # Source is not a string literal - trust the register
+                    arg2_is_in_reg = True
                     arg2_reg = self.register_allocator.temp_to_reg[arg2]
-                    instructions.append(f"sw {arg2_reg}, 4($sp)  # Save arg2 ({arg2} in {arg2_reg})")
-                else:
-                    instructions.append(f"# ERROR: {arg2} not in register allocator!")
-                    instructions.append(f"li $a0, 0")
-                    instructions.append(f"sw $a0, 4($sp)")
             elif arg2 in self.register_allocator.temp_to_reg:
-                # No source tracking - trust the register (may be clobbered!)
+                arg2_is_in_reg = True
                 arg2_reg = self.register_allocator.temp_to_reg[arg2]
-                instructions.append(f"sw {arg2_reg}, 4($sp)  # Save arg2 ({arg2} in {arg2_reg})")
-            else:
-                # Temporary not in a register yet
-                instructions.append(f"# ERROR: {arg2} not in register allocator!")
-                instructions.append(f"li $a0, 0")
-                instructions.append(f"sw $a0, 4($sp)")
         else:
-            # Load non-temporary arg2 - temporarily use $a0 which is safe
-            self._load_string_address(arg2, '$a0', instructions)
-            instructions.append(f"sw $a0, 4($sp)")
+            arg2_needs_literal_load = True
+            arg2_literal = arg2
+
+        # PHASE 1: Save all register-based args BEFORE any literal loading
+        if arg1_is_in_reg:
+            instructions.append(f"# Save arg1 from register FIRST (before any literal loads)")
+            instructions.append(f"sw {arg1_reg}, 0($sp)  # Save arg1 ({arg1} in {arg1_reg})")
+        if arg2_is_in_reg:
+            instructions.append(f"# Save arg2 from register FIRST (before any literal loads)")
+            instructions.append(f"sw {arg2_reg}, 4($sp)  # Save arg2 ({arg2} in {arg2_reg})")
+
+        # PHASE 2: Load literals into their stack positions
+        if arg1_needs_literal_load:
+            if arg1_literal:
+                if isinstance(arg1_literal, str) and arg1_literal.startswith('str_'):
+                    instructions.append(f"# Reload {arg1} from string literal: {arg1_literal}")
+                    self._load_string_address(arg1_literal, '$a0', instructions)
+                else:
+                    self._load_string_address(arg1_literal, '$a0', instructions)
+                instructions.append(f"sw $a0, 0($sp)")
+            else:
+                instructions.append(f"# ERROR: {arg1} has no source!")
+                instructions.append(f"li $a0, 0")
+                instructions.append(f"sw $a0, 0($sp)")
+
+        if arg2_needs_literal_load:
+            if arg2_literal:
+                if isinstance(arg2_literal, str) and arg2_literal.startswith('str_'):
+                    instructions.append(f"# Reload {arg2} from string literal: {arg2_literal}")
+                    self._load_string_address(arg2_literal, '$a1', instructions)
+                else:
+                    self._load_string_address(arg2_literal, '$a1', instructions)
+                instructions.append(f"sw $a1, 4($sp)")
+            else:
+                instructions.append(f"# ERROR: {arg2} has no source!")
+                instructions.append(f"li $a1, 0")
+                instructions.append(f"sw $a1, 4($sp)")
 
         # NOW save working registers (after args are safely on stack)
         instructions.append(f"# Save working registers")
