@@ -651,6 +651,13 @@ class MIPSGenerator:
         # Result is always a temporary
         result_reg = self.register_allocator.get_reg(quad.result)
 
+        # Two-phase loading to prevent register conflicts:
+        # Phase 1: If arg1 and arg2 would use the same register, use a different register for arg1
+        if arg1_reg == arg2_reg and not self._is_temporary(quad.arg1) and self._is_temporary(quad.arg2):
+            # arg2 is already in the register, so use a different register for arg1
+            # Get a different temporary register for arg1
+            arg1_reg = self.register_allocator.get_reg_temp("arg1_alt")
+
         # Cargar arg1 - CHECK MEMORY ADDRESS FIRST!
         if self._is_temporary(quad.arg1):
             # Si es temporal, ya debería estar en registro
@@ -1401,6 +1408,10 @@ class MIPSGenerator:
             if self._is_temporary(result):
                 result_reg = self.register_allocator.get_reg(result)
                 instructions.append(f"move {result_reg}, $v0")
+                # CRITICAL: Clear any stale temp_value_source entry
+                # because this temporary now holds a runtime value, not a literal
+                if result in self.temp_value_source:
+                    del self.temp_value_source[result]
             else:
                 # Store return value to memory
                 result_addr = self._get_memory_label(result)
@@ -2157,6 +2168,9 @@ class MIPSGenerator:
         # Copy str1 to allocated position
         instructions.append(f"# Copy first string to allocated position")
         instructions.append(f"move $a0, {result_reg}  # dest = buffer + offset")
+        # Reload str1 from stack if it was clobbered by result_reg assignment
+        if result_reg == str1_reg:
+            instructions.append(f"lw {str1_reg}, 28($sp)  # Reload str1 (was clobbered by result_reg, offset adjusted for saved result)")
         instructions.append(f"move $a1, {str1_reg}  # src = str1")
         instructions.append("jal __string_copy")
 
@@ -2171,6 +2185,9 @@ class MIPSGenerator:
 
         # Append str2
         instructions.append(f"# Append second string")
+        # Reload str2 from stack if it was clobbered by result_reg assignment
+        if result_reg == str2_reg:
+            instructions.append(f"lw {str2_reg}, 32($sp)  # Reload str2 (was clobbered by result_reg, offset adjusted for saved result)")
         instructions.append(f"move $a1, {str2_reg}  # src = str2")
         instructions.append("jal __string_copy")
 
