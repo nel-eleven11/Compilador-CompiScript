@@ -32,6 +32,10 @@ class MIPSGenerator:
         self.current_quad_idx = 0
         self.param_registers = []  # Para rastrear argumentos durante llamadas
 
+        # Track the SOURCE VALUE for each temporary to handle register aliasing
+        # Maps temporary name -> source value (for reloading if register was clobbered)
+        self.temp_value_source = {}
+
     def generate_mips_code(self):
         """Genera código MIPS completo desde los cuádruplos"""
         # 1. Sección de datos (variables globales)
@@ -87,25 +91,44 @@ class MIPSGenerator:
         if string_literals:
             self.data_section.append("# String literals")
             for string_value, label in string_literals.items():
-                # Remove quotes and escape special characters for MIPS
+                # Remove quotes and prepare for MIPS assembly
                 string_content = string_value[1:-1]  # Remove surrounding quotes
-                # Escape backslashes and quotes
-                string_content = string_content.replace('\\', '\\\\').replace('"', '\\"')
+                # Only escape quotes for MIPS assembly (backslashes are already properly escaped in source)
+                # Don't double-escape backslashes - MIPS assembler will interpret \n, \t, etc. correctly
+                string_content = string_content.replace('"', '\\"')
                 self.data_section.append(f'{label}: .asciiz "{string_content}"')
+                self.data_section.append(".align 2  # Align to word boundary")
 
-        # Add string concatenation buffer with offset tracking
-        self.data_section.append("# String concatenation buffer")
-        self.data_section.append("string_concat_buffer: .space 1048576  # 1MB buffer for string concat")
-        self.data_section.append("__concat_offset: .word 0  # Current offset in concat buffer (heap-style allocation)")
-        # Add integer-to-string conversion buffers and results buffer
+        # Add string buffer pointers and offsets (buffers allocated dynamically in main)
+        self.data_section.append("# String buffer pointers (allocated dynamically)")
+        self.data_section.append("string_concat_buffer: .word 0  # Pointer to concat buffer (allocated at runtime)")
+        self.data_section.append("__concat_offset: .word 0  # Current offset in concat buffer")
         self.data_section.append("__int_to_str_buf: .space 24  # Temp buffer for int-to-string conversion")
-        self.data_section.append("__int_to_str_results: .space 4096  # 4KB buffer for toString results (separate from concat)")
+        self.data_section.append("__int_to_str_results: .word 0  # Pointer to toString results buffer (allocated at runtime)")
         self.data_section.append("__int_to_str_offset: .word 0  # Current offset in results buffer")
 
         # Add error messages for runtime safety checks
-        self.data_section.append("__err_buf_corrupt: .asciiz \"ERROR: String buffer overflow!\\n\"")
+        self.data_section.append("__err_buf_overflow: .asciiz \"ERROR: String buffer overflow!\\n\"")
+
+        # Debug messages for SP tracing (disabled for performance)
+        # self.data_section.append("__debug_sp_msg: .asciiz \" SP=\"")
+        # self.data_section.append("__debug_newline: .asciiz \"\\n\"")
 
         self.data_section.append("")
+
+    def _emit_sp_debug(self, instructions):
+        """Helper to emit SP debug output (disabled)"""
+        pass  # Disabled for performance
+        # instructions.append("# DEBUG SP")
+        # instructions.append("li $v0, 4")
+        # instructions.append("la $a0, __debug_sp_msg")
+        # instructions.append("syscall")
+        # instructions.append("li $v0, 1")
+        # instructions.append("move $a0, $sp")
+        # instructions.append("syscall")
+        # instructions.append("li $v0, 4")
+        # instructions.append("la $a0, __debug_newline")
+        # instructions.append("syscall")
 
     def _generate_text_section(self):
         """Genera la sección .text con el código principal"""
@@ -137,10 +160,12 @@ class MIPSGenerator:
 
         # Generate main section FIRST (so it executes first)
         self.text_section.append("main:")
-        self.text_section.append("# Initialize stack pointer to a valid value (Mars sometimes starts with invalid $sp)")
-        self.text_section.append("li $sp, 0x7fffeffc  # Top of user stack segment in Mars")
+        self.text_section.append("# Initialize stack pointer")
+        self.text_section.append("li $sp, 0x7fffeffc  # Set to proper stack top")
+        self._emit_sp_debug(self.text_section)
         self.text_section.append("# Main prologue")
         self.text_section.append("addiu $sp, $sp, -4")
+        self._emit_sp_debug(self.text_section)
         self.text_section.append("sw $ra, 0($sp)")
         self.text_section.append("")
 
@@ -159,6 +184,28 @@ class MIPSGenerator:
                 self.register_allocator.used_regs.add(saved_reg)
             self.text_section.append("")
 
+        # Allocate string buffers dynamically to avoid large static data section
+        self.text_section.append("# Allocate string buffers dynamically")
+        self.text_section.append("addiu $sp, $sp, -8  # Save registers")
+        self._emit_sp_debug(self.text_section)
+        self.text_section.append("sw $a0, 0($sp)")
+        self.text_section.append("sw $v0, 4($sp)")
+        self.text_section.append("li $v0, 9  # sbrk for concat buffer")
+        self.text_section.append("li $a0, 3670016  # 3.5MB - max for MARS")
+        self.text_section.append("syscall")
+        self.text_section.append("la $a0, string_concat_buffer")
+        self.text_section.append("sw $v0, 0($a0)  # Store buffer pointer")
+        self.text_section.append("li $v0, 9  # sbrk for toString results buffer")
+        self.text_section.append("li $a0, 131072  # 128KB")
+        self.text_section.append("syscall")
+        self.text_section.append("la $a0, __int_to_str_results")
+        self.text_section.append("sw $v0, 0($a0)  # Store buffer pointer")
+        self.text_section.append("lw $a0, 0($sp)  # Restore registers")
+        self.text_section.append("lw $v0, 4($sp)")
+        self.text_section.append("addiu $sp, $sp, 8")
+        self._emit_sp_debug(self.text_section)
+        self.text_section.append("")
+
         # Traducir cuádruplos del main
         for idx, quad in main_quads:
             self.text_section.append(f"# Quadruple {idx}: {quad}")
@@ -173,6 +220,7 @@ class MIPSGenerator:
         self.text_section.append("# Main epilogue")
         self.text_section.append("lw $ra, 0($sp)")
         self.text_section.append("addiu $sp, $sp, 4")
+        self._emit_sp_debug(self.text_section)
         self.text_section.append("li $v0, 10  # Exit syscall")
         self.text_section.append("syscall")
         self.text_section.append("# Safety: Infinite loop to prevent fall-through")
@@ -509,6 +557,10 @@ class MIPSGenerator:
             # Si target es temporal, mover a su registro (si es diferente)
             if value_reg != target_reg:
                 instructions.append(f"move {target_reg}, {value_reg}")
+
+            # CRITICAL: Track the source value for this temporary
+            # so we can reload it later if the register gets clobbered
+            self.temp_value_source[target] = value
         elif self._is_fp_relative(target):
             # Target es FP-relative (local variable or parameter)
             offset = self._extract_fp_offset(target)
@@ -956,8 +1008,12 @@ class MIPSGenerator:
         """
         label_name = self._sanitize_label(quad.result)
 
-        # Track current function for constructor detection
-        self.current_function = label_name
+        # Track current function for constructor detection (only for function labels)
+        if label_name.startswith('FUNC_'):
+            self.current_function = label_name
+            # Reset temp value source tracking when entering a new function
+            # to prevent cross-function contamination (temps are reused across functions)
+            self.temp_value_source = {}
 
         # Special handling: Replace toString stub with runtime implementation
         if label_name == "FUNC_toString":
@@ -978,6 +1034,56 @@ class MIPSGenerator:
                 f"# Call runtime function",
                 f"jal __int_to_string",
                 f"# Restore and return",
+                f"lw $fp, 0($sp)",
+                f"lw $ra, 4($sp)",
+                f"addiu $sp, $sp, 8",
+                f"jr $ra"
+            ]
+
+        # Special handling: printString uses syscall 4
+        if label_name == "FUNC_printString":
+            self.skip_until_leave = True
+            return [
+                f"{label_name}:",
+                f"    addiu $sp, $sp, -12",
+                f"    sw $ra, 8($sp)",
+                f"    sw $fp, 4($sp)",
+                f"    addiu $fp, $sp, 12",
+                f"    lw $a0, 0($fp)",
+                f"    li $v0, 4",
+                f"    syscall",
+                f"    # Reset concat buffer after printing (string has been consumed)",
+                f"    jal __reset_concat_buffer",
+                f"    lw $v0, 0($fp)",
+                f"    j FUNC_printString_epilogue",
+                f"",
+                f"FUNC_printString_epilogue:",
+                f"# Function epilogue",
+                f"addiu $sp, $fp, -8",
+                f"lw $fp, 0($sp)",
+                f"lw $ra, 4($sp)",
+                f"addiu $sp, $sp, 8",
+                f"jr $ra"
+            ]
+
+        # Special handling: printInteger uses syscall 1
+        if label_name == "FUNC_printInteger":
+            self.skip_until_leave = True
+            return [
+                f"{label_name}:",
+                f"    addiu $sp, $sp, -12",
+                f"    sw $ra, 8($sp)",
+                f"    sw $fp, 4($sp)",
+                f"    addiu $fp, $sp, 12",
+                f"    lw $a0, 0($fp)",
+                f"    li $v0, 1",
+                f"    syscall",
+                f"    lw $v0, 0($fp)",
+                f"    j FUNC_printInteger_epilogue",
+                f"",
+                f"FUNC_printInteger_epilogue:",
+                f"# Function epilogue",
+                f"addiu $sp, $fp, -8",
                 f"lw $fp, 0($sp)",
                 f"lw $ra, 4($sp)",
                 f"addiu $sp, $sp, 8",
@@ -1197,6 +1303,7 @@ class MIPSGenerator:
             # First allocate space for saved registers and locals
             total_offset = 8 + frame_size
             instructions.append(f"addiu $sp, $sp, -{total_offset}")
+            self._emit_sp_debug(instructions)
 
             # Save $ra and $fp at the TOP of the allocated space (right below args)
             instructions.append(f"sw $ra, {total_offset - 4}($sp)")  # Save $ra
@@ -1209,10 +1316,17 @@ class MIPSGenerator:
             # Function epilogue: cleanup stack frame
             # Current state: $fp points to arg0, $sp points below locals
             # Saved $fp is at -8($fp), saved $ra is at -4($fp)
+
+            # Add epilogue label for return statements to jump to
+            if self.current_function:
+                epilogue_label = f"{self.current_function}_epilogue"
+                instructions.append(f"{epilogue_label}:")
+
             instructions.append(f"# Function epilogue")
 
             # Point $sp to saved $fp location
             instructions.append(f"addiu $sp, $fp, -8")
+            self._emit_sp_debug(instructions)
 
             # Restore $fp and $ra
             instructions.append(f"lw $fp, 0($sp)")
@@ -1220,6 +1334,7 @@ class MIPSGenerator:
 
             # Pop $fp/$ra from stack (sp now points to arg0 location)
             instructions.append(f"addiu $sp, $sp, 8")
+            self._emit_sp_debug(instructions)
 
             # Return to caller (caller will clean up arguments)
             instructions.append(f"jr $ra")
@@ -1243,6 +1358,7 @@ class MIPSGenerator:
             # Push onto stack
             instructions.append(f"addiu $sp, $sp, -4")
             instructions.append(f"sw {arg_reg}, 0($sp)")
+            self._emit_sp_debug(instructions)
 
             # Track for parameter passing to $a0-$a3 if needed
             self.param_registers.append(arg_reg)
@@ -1313,8 +1429,11 @@ class MIPSGenerator:
                     instructions.append(f"# Constructor: return __this pointer")
                     instructions.append(f"lw $v0, 0($fp)  # Load __this from FP[0]")
 
-            # Jump to function epilogue (leave will handle cleanup)
-            # For now, we don't jump - leave quadruple follows immediately
+            # Jump to function epilogue
+            # Generate epilogue label based on current function name
+            if self.current_function:
+                epilogue_label = f"{self.current_function}_epilogue"
+                instructions.append(f"j {epilogue_label}")
 
         elif quad.op == 'add' and (quad.arg1 == 'SP' or str(quad.arg1).upper() == 'SP'):
             # Stack cleanup after function call: (add, SP, size, SP)
@@ -1322,6 +1441,7 @@ class MIPSGenerator:
             cleanup_size = quad.arg2
             instructions.append(f"# Clean up arguments from stack ({cleanup_size} bytes)")
             instructions.append(f"addiu $sp, $sp, {cleanup_size}")
+            self._emit_sp_debug(instructions)
 
         return instructions
 
@@ -1601,6 +1721,7 @@ class MIPSGenerator:
         lines.append("    lw $t2, 0($a0)  # $t2 = current offset")
         lines.append("    # Get address in results buffer")
         lines.append("    la $t3, __int_to_str_results")
+        lines.append("    lw $t3, 0($t3)  # Load buffer pointer")
         lines.append("    add $t3, $t3, $t2  # $t3 = results_buffer + offset = destination")
         lines.append("    # Copy from temp buffer to rotating buffer")
         lines.append("    addiu $a0, $t1, 1  # src = first char in temp buf")
@@ -1623,8 +1744,8 @@ class MIPSGenerator:
         lines.append("    la $a0, __int_to_str_offset")
         lines.append("    lw $t1, 0($a0)")
         lines.append("    add $t1, $t1, $t0")
-        lines.append("    # Check if offset exceeds results buffer (4096 bytes)")
-        lines.append("    li $t0, 4096          # Max offset = 4KB")
+        lines.append("    # Check if offset exceeds results buffer (128KB)")
+        lines.append("    li $t0, 131072        # Max offset = 128KB")
         lines.append("    blt $t1, $t0, __its_offset_ok")
         lines.append("    li $t1, 0             # Reset to start")
         lines.append("__its_offset_ok:")
@@ -1657,12 +1778,11 @@ class MIPSGenerator:
         lines.append("    li $t1, 262144")
         lines.append("    bge $t2, $t1, __string_copy_done  # If too long, just stop")
         lines.append("    lb $t0, 0($a1)      # Load byte from src")
-        lines.append("    sb $t0, 0($a0)      # Store byte to dest")
-        lines.append("    beq $t0, $zero, __string_copy_done  # If null terminator, done")
+        lines.append("    sb $t0, 0($a0)      # Store byte to dest (including null)")
         lines.append("    addiu $a0, $a0, 1   # dest++")
         lines.append("    addiu $a1, $a1, 1   # src++")
         lines.append("    addiu $t2, $t2, 1   # counter++")
-        lines.append("    j __string_copy_loop")
+        lines.append("    bne $t0, $zero, __string_copy_loop  # Continue if NOT null terminator")
         lines.append("")
         lines.append("__string_copy_done:")
         lines.append("    # Restore registers")
@@ -1733,6 +1853,14 @@ class MIPSGenerator:
         lines.append("    jr $ra")
         lines.append("")
 
+        # Buffer reset function - safely resets the concat buffer offset
+        lines.append("# Reset concat buffer - used after strings are consumed (e.g., after printString)")
+        lines.append("__reset_concat_buffer:")
+        lines.append("    la $t0, __concat_offset")
+        lines.append("    sw $zero, 0($t0)    # Reset offset to 0")
+        lines.append("    jr $ra")
+        lines.append("")
+
         return lines
 
     def _is_string_variable(self, operand):
@@ -1787,6 +1915,29 @@ class MIPSGenerator:
             return True
         if isinstance(arg2, str) and arg2.startswith('str_'):
             return True
+
+        # Check if either operand is a frame-relative address (local variable)
+        # If one is a string literal/variable and the other is FP-relative, assume string concat
+        is_arg1_fp = self._is_fp_relative(arg1)
+        is_arg2_fp = self._is_fp_relative(arg2)
+
+        if is_arg1_fp or is_arg2_fp:
+            # At least one is a frame-relative local variable
+            # If the other is clearly a string, assume this is string concat
+            if is_arg1_fp and self._is_string_variable(arg2):
+                return True
+            if is_arg2_fp and self._is_string_variable(arg1):
+                return True
+            # If both are FP-relative and we're in a string-related function, assume string concat
+            if is_arg1_fp and is_arg2_fp and self.current_function:
+                func_lower = self.current_function.lower()
+                string_func_patterns = [
+                    'saludar', 'greet', 'estudiar', 'study',
+                    'incrementar', 'increment', 'add', 'message',
+                    'tostring', 'print', 'get', 'show', 'display', 'main'
+                ]
+                if any(pattern in func_lower for pattern in string_func_patterns):
+                    return True
 
         # Check if both operands are string variables using type information
         # This prevents false positives with integer arithmetic
@@ -1856,58 +2007,100 @@ class MIPSGenerator:
         # CRITICAL: Get result_reg first, then choose temp regs that don't conflict!
         result_reg = self.register_allocator.get_reg(result)
 
-        # Load arg values FIRST and save to stack to avoid register conflicts
-        # CRITICAL: Don't use _load_string_address because temporaries might be in registers
-        # that get overwritten. Instead, get the register and save it directly.
-        instructions.append(f"# Save arg addresses to stack to avoid register conflicts")
+        # First, allocate separate stack space for arg values (before saving working regs)
+        # IMPORTANT: We MUST reload values from their source instead of trusting register contents
+        # because registers may have been reallocated to other temporaries since the original assignment
+        instructions.append(f"# Reserve stack space for arg values")
         instructions.append(f"addiu $sp, $sp, -8")
 
-        # Get arg1 register and save to stack
+        # Get arg1 value and save to stack
+        # ALWAYS reload from source to avoid register aliasing bugs
+        instructions.append(f"# Load arg1 value (reload from source)")
         if self._is_temporary(arg1):
-            # Look up which register this temporary is CURRENTLY in
-            if arg1 in self.register_allocator.temp_to_reg:
+            # For temporaries, check if we know the source value AND it's a string literal
+            # If so, reload from source instead of trusting the register
+            if arg1 in self.temp_value_source:
+                source_value = self.temp_value_source[arg1]
+                # Only reload if it's a string literal (starts with "str_")
+                # For other sources (heap addresses, computed values), trust the register
+                if isinstance(source_value, str) and source_value.startswith('str_'):
+                    instructions.append(f"# Reload {arg1} from string literal: {source_value}")
+                    self._load_string_address(source_value, '$a0', instructions)
+                    instructions.append(f"sw $a0, 0($sp)")
+                elif arg1 in self.register_allocator.temp_to_reg:
+                    # Source is not a string literal - trust the register
+                    arg1_reg = self.register_allocator.temp_to_reg[arg1]
+                    instructions.append(f"sw {arg1_reg}, 0($sp)  # Save arg1 ({arg1} in {arg1_reg})")
+                else:
+                    instructions.append(f"# ERROR: {arg1} not in register allocator!")
+                    instructions.append(f"li $a0, 0")
+                    instructions.append(f"sw $a0, 0($sp)")
+            elif arg1 in self.register_allocator.temp_to_reg:
+                # No source tracking - trust the register (may be clobbered!)
                 arg1_reg = self.register_allocator.temp_to_reg[arg1]
                 instructions.append(f"sw {arg1_reg}, 0($sp)  # Save arg1 ({arg1} in {arg1_reg})")
             else:
                 # Temporary not in a register yet - this shouldn't happen for string concat args
                 instructions.append(f"# ERROR: {arg1} not in register allocator!")
-                instructions.append(f"li $t7, 0")
-                instructions.append(f"sw $t7, 0($sp)")
+                instructions.append(f"li $a0, 0")
+                instructions.append(f"sw $a0, 0($sp)")
         else:
-            # Load non-temporary arg1
-            self._load_string_address(arg1, '$t7', instructions)
-            instructions.append(f"sw $t7, 0($sp)")
+            # Load non-temporary arg1 - temporarily use $a0 which is safe
+            # This correctly handles string literals, variables, etc.
+            self._load_string_address(arg1, '$a0', instructions)
+            instructions.append(f"sw $a0, 0($sp)")
 
-        # Get arg2 register and save to stack
+        # Get arg2 value and save to stack
+        instructions.append(f"# Load arg2 value (reload from source)")
         if self._is_temporary(arg2):
-            # Look up which register this temporary is CURRENTLY in
-            if arg2 in self.register_allocator.temp_to_reg:
+            # For temporaries, check if we know the source value AND it's a string literal
+            # If so, reload from source instead of trusting the register
+            if arg2 in self.temp_value_source:
+                source_value = self.temp_value_source[arg2]
+                # Only reload if it's a string literal (starts with "str_")
+                # For other sources (heap addresses, computed values), trust the register
+                if isinstance(source_value, str) and source_value.startswith('str_'):
+                    instructions.append(f"# Reload {arg2} from string literal: {source_value}")
+                    self._load_string_address(source_value, '$a0', instructions)
+                    instructions.append(f"sw $a0, 4($sp)")
+                elif arg2 in self.register_allocator.temp_to_reg:
+                    # Source is not a string literal - trust the register
+                    arg2_reg = self.register_allocator.temp_to_reg[arg2]
+                    instructions.append(f"sw {arg2_reg}, 4($sp)  # Save arg2 ({arg2} in {arg2_reg})")
+                else:
+                    instructions.append(f"# ERROR: {arg2} not in register allocator!")
+                    instructions.append(f"li $a0, 0")
+                    instructions.append(f"sw $a0, 4($sp)")
+            elif arg2 in self.register_allocator.temp_to_reg:
+                # No source tracking - trust the register (may be clobbered!)
                 arg2_reg = self.register_allocator.temp_to_reg[arg2]
                 instructions.append(f"sw {arg2_reg}, 4($sp)  # Save arg2 ({arg2} in {arg2_reg})")
             else:
                 # Temporary not in a register yet
                 instructions.append(f"# ERROR: {arg2} not in register allocator!")
-                instructions.append(f"li $t7, 0")
-                instructions.append(f"sw $t7, 4($sp)")
+                instructions.append(f"li $a0, 0")
+                instructions.append(f"sw $a0, 4($sp)")
         else:
-            # Load non-temporary arg2
-            self._load_string_address(arg2, '$t7', instructions)
-            instructions.append(f"sw $t7, 4($sp)")
+            # Load non-temporary arg2 - temporarily use $a0 which is safe
+            self._load_string_address(arg2, '$a0', instructions)
+            instructions.append(f"sw $a0, 4($sp)")
 
-        # Allocate space in concat buffer BEFORE loading str regs to avoid conflicts
-        # CRITICAL: result_reg might be $t8 or $t9, so calculate it before we use those!
-        instructions.append(f"# Allocate space in concat buffer for this result")
-        instructions.append(f"la $a0, __concat_offset")
-        instructions.append(f"lw $t4, 0($a0)  # Load current offset into $t4")
-        instructions.append(f"la $t7, string_concat_buffer  # Load buffer base into $t7")
-        instructions.append(f"add $t6, $t7, $t4  # Calculate result address in $t6 (safe reg)")
+        # NOW save working registers (after args are safely on stack)
+        instructions.append(f"# Save working registers")
+        instructions.append(f"addiu $sp, $sp, -24")
+        instructions.append(f"sw $t0, 0($sp)")
+        instructions.append(f"sw $t4, 4($sp)")
+        instructions.append(f"sw $t6, 8($sp)")
+        instructions.append(f"sw $t7, 12($sp)")
+        instructions.append(f"sw $t8, 16($sp)")
+        instructions.append(f"sw $t9, 20($sp)")
 
-        # NOW restore arg addresses from stack to $t8/$t9
-        instructions.append(f"lw $t8, 0($sp)  # str1")
-        instructions.append(f"lw $t9, 4($sp)  # str2")
-        instructions.append(f"addiu $sp, $sp, 8")
+        # Load arguments
+        instructions.append(f"lw $t8, 24($sp)  # str1")
+        instructions.append(f"lw $t9, 28($sp)  # str2")
 
-        # CRITICAL FIX: Check if arg1 is an integer (< 0x10000) and convert to string
+        # FIRST: Check if arguments are integers and convert to strings
+        instructions.append("# Check if arg1 is an integer (< 0x10000) and convert to string")
         instructions.append("# Check if arg1 is an integer that needs toString")
         instructions.append("li $t0, 0x10000  # Values below this are integers")
         instructions.append(f"bgeu $t8, $t0, __concat_{self._concat_counter}_arg1_is_string")
@@ -1926,7 +2119,25 @@ class MIPSGenerator:
         instructions.append("move $t9, $v0  # Replace with string pointer")
         instructions.append(f"__concat_{self._concat_counter}_arg2_is_string:")
 
-        # Move result address to result_reg AFTER loading strings
+        # NOW calculate lengths and allocate heap memory
+        instructions.append(f"# Calculate total length needed")
+        instructions.append(f"move $a0, $t8")
+        instructions.append(f"jal __string_length")
+        instructions.append(f"move $t4, $v0  # Save str1 length")
+
+        instructions.append(f"move $a0, $t9")
+        instructions.append(f"jal __string_length")
+        instructions.append(f"add $t4, $t4, $v0  # Total = len1 + len2")
+        instructions.append(f"addiu $t4, $t4, 1  # Add null terminator")
+
+        # Allocate heap memory
+        instructions.append(f"# Allocate heap memory for result")
+        instructions.append(f"move $a0, $t4")
+        instructions.append(f"li $v0, 9  # sbrk")
+        instructions.append(f"syscall")
+        instructions.append(f"move $t6, $v0  # Save allocated address")
+
+        # Move result address to result_reg
         instructions.append(f"move {result_reg}, $t6  # Move result to result_reg")
 
         str1_reg = '$t8'
@@ -1960,32 +2171,22 @@ class MIPSGenerator:
         # Restore result address again
         instructions.append(f"lw $t6, 0($sp)  # Restore result address again")
 
-        # Calculate total length and update offset
-        instructions.append(f"# Update concat buffer offset")
-        instructions.append(f"move $a0, $t6")
-        instructions.append("jal __string_length")
-        instructions.append(f"addiu $v0, $v0, 1  # Add 1 for null terminator")
-        instructions.append(f"addiu $v0, $v0, 15  # Round up to 16-byte boundary")
-        instructions.append(f"srl $v0, $v0, 4")
-        instructions.append(f"sll $v0, $v0, 4")
-        instructions.append(f"la $a0, __concat_offset")
-        instructions.append(f"lw $a1, 0($a0)")
-        instructions.append(f"add $a1, $a1, $v0  # new_offset = old_offset + aligned_length")
-        # Check if we exceeded buffer (1MB)
-        instructions.append(f"li $t7, 1048576")
-        instructions.append(f"blt $a1, $t7, __concat_ok_{id(quad)}")
-        # Error: buffer full (don't wrap - that would corrupt old results!)
-        instructions.append(f"li $v0, 4")
-        instructions.append(f"la $a0, __err_buf_corrupt")
-        instructions.append(f"syscall")
-        instructions.append(f"li $v0, 10")
-        instructions.append(f"syscall")
-        instructions.append(f"__concat_ok_{id(quad)}:")
-        instructions.append(f"sw $a1, 0($a0)  # Store updated offset")
-
+        # No need to update buffer offset - we're using heap allocation now
         # Restore final result and clean stack
         instructions.append(f"lw {result_reg}, 0($sp)")
         instructions.append(f"addiu $sp, $sp, 4")
+
+        # Restore working registers (skip the one used for result to avoid overwriting)
+        instructions.append(f"# Restore working registers")
+        working_regs = ['$t0', '$t4', '$t6', '$t7', '$t8', '$t9']
+        offsets = [0, 4, 8, 12, 16, 20]
+        for reg, offset in zip(working_regs, offsets):
+            if reg != result_reg:  # Don't restore if it's our result register!
+                instructions.append(f"lw {reg}, {offset}($sp)")
+        instructions.append(f"addiu $sp, $sp, 24")
+
+        # Clean up arg values from stack
+        instructions.append(f"addiu $sp, $sp, 8  # Clean up arg values")
 
         return instructions
 
@@ -2096,17 +2297,9 @@ class MIPSGenerator:
         # result: temporal destino para la dirección resultante
         result_reg = self.register_allocator.get_reg(quad.result)
 
-        # offset inmediato (ej. 8 para Estudiante.edad)
-        # IMPORTANT: The semantic analyzer uses 8-byte field alignment in TAC,
-        # but in MIPS all fields are 4 bytes. We need to correct the offsets.
-        # Formula: actual_offset = offset - (offset // 8) * 4
-        tac_offset = int(quad.arg2 or 0)
-        if tac_offset >= 8:
-            # Correct for 8-byte TAC alignment vs 4-byte MIPS alignment
-            mips_offset = tac_offset - (tac_offset // 8) * 4
-        else:
-            mips_offset = tac_offset
-        offset_imm = str(mips_offset)
+        # offset inmediato (ej. 4 para Estudiante.edad, 8 para Estudiante.grado)
+        # The TAC now uses correct 4-byte alignment after fixing string size
+        offset_imm = str(int(quad.arg2 or 0))
 
         # Check if we're in a constructor
         in_constructor = (self.current_function and

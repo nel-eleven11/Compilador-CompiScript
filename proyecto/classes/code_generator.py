@@ -103,6 +103,10 @@ class CodeGenerator:
 
     def get_type_size(self, type_obj):
         """Calcula el tamaño de un tipo en bytes"""
+        # Special case for strings - always use 4 bytes (pointer size in MIPS)
+        if type_obj.name == 'string':
+            return 4
+
         if hasattr(type_obj, 'width') and type_obj.width:
             # un print de dbug que puse para ver si estamos usando el tamaño
             # si lo usamos, pero luego en el memory_manager fijamos espacio a 4bytes con el fin
@@ -114,7 +118,7 @@ class CodeGenerator:
         type_sizes = {
             'integer': 4,
             'boolean': 1,
-            'string': 8,  # Puntero a string
+            'string': 4,  # Puntero a string (4 bytes in MIPS)
             'void': 0,
             'null': 4,    # Puntero
         }
@@ -173,13 +177,25 @@ class CodeGenerator:
                 return f"0x{address:04X}"
 
         # Variables locales (dentro de funciones)
-        if self.current_ar:
-            function_name = self.current_ar.function_name
-            size = self.get_type_size(symbol.type)
+        # IMPORTANT: Only treat as local if we're in a function AND current_function is not "global"
+        if self.current_ar and self.current_function != "global":
+            # Check if variable is already in AR design (might be a parameter)
+            offset = self.current_ar.get_offset(var_name)
 
-            # Usar el MemoryManager para variables locales
-            address = self.memory_manager.allocate_local(var_name, size, function_name)
-            return address  # Ya retorna "FP[offset]"
+            if offset is not None:
+                # Variable already exists in AR (it's a parameter)
+                return f"FP[{offset}]"
+
+            # Variable not in AR yet - add it as a local
+            self.current_ar.add_local(var_name, symbol.type)
+            offset = self.current_ar.get_offset(var_name)
+
+            # Also register in memory manager for bookkeeping
+            function_name = self.current_ar.function_name
+            key = f"{function_name}::{var_name}"
+            self.memory_manager.allocations[key] = f"FP[{offset}]"
+
+            return f"FP[{offset}]"
 
         # Variables en scopes locales pero fuera de funciones (ej: for loops a nivel global)
         # Tratarlas como globales
@@ -740,6 +756,8 @@ class CodeGenerator:
         self.emit_quad('label', None, None, func_label)
 
         # Prólogo de función: configurar el frame pointer
+        # Emit enter with placeholder size - will be patched after processing body
+        enter_quad_index = len(self.quadruples)
         self.emit_quad('enter', str(ar_design.size), None, None)
 
         # Guardar el contexto actual de función
@@ -755,6 +773,9 @@ class CodeGenerator:
         if body_func:
             body_func()
 
+        # Patch the enter quadruple with the final AR size (now includes locals)
+        self.quadruples[enter_quad_index].arg1 = str(ar_design.size)
+
         # Si es función void y no hay return explícito, agregar return vacío
         if return_type and return_type.name == 'void':
             self.emit_quad('return', None, None, None)
@@ -765,12 +786,18 @@ class CodeGenerator:
         # Restaurar contexto de función
         self.function_context = old_function_context
 
+        # Clear current_ar to indicate we're no longer in a function
+        # This ensures variables in main-level loops are treated as globals
+        self.current_ar = None
+        # Reset current_function back to global context
+        self.current_function = "global"
+
         return {'func_label': func_label, 'ar_design': ar_design}
 
     def generate_method_declaration(self, class_name, method_name, parameters, return_type, body_func, ctx=None):
         func_key = self._method_key(class_name, method_name)
         self.set_current_function(func_key)
-        
+
         ar_design = self.create_ar_design(func_key)
         
         # CRÍTICO: __this SIEMPRE es el primer parámetro (FP[0])
@@ -790,8 +817,10 @@ class CodeGenerator:
         # Resto del código igual...
         func_label = self._method_label(class_name, method_name)
         self.emit_quad('label', None, None, func_label)
+        # Emit enter with placeholder size - will be patched after processing body
+        enter_quad_index = len(self.quadruples)
         self.emit_quad('enter', str(ar_design.size), None, None)
-        
+
         old_function_context = getattr(self, 'function_context', None)
         self.function_context = {
             'name': func_key,
@@ -801,16 +830,24 @@ class CodeGenerator:
             'class_name': class_name,
             'method_name': method_name
         }
-        
+
         if body_func:
             body_func()
-        
+
+        # Patch the enter quadruple with the final AR size (now includes locals)
+        self.quadruples[enter_quad_index].arg1 = str(ar_design.size)
+
         if return_type and getattr(return_type, 'name', None) == 'void':
             self.emit_quad('return', None, None, None)
-        
+
         self.emit_quad('leave', None, None, None)
         self.function_context = old_function_context
-        
+
+        # Clear current_ar to indicate we're no longer in a function
+        self.current_ar = None
+        # Reset current_function back to global context
+        self.current_function = "global"
+
         return {'func_label': func_label, 'ar_design': ar_design}
 
 
@@ -906,7 +943,8 @@ class CodeGenerator:
         Agrega una variable local al registro de activación actual
         """
         function_context = getattr(self, 'function_context', None)
-        if function_context:
+        # IMPORTANT: Only treat as local if we're in a function AND not in global context
+        if function_context and self.current_function != "global":
             ar_design = function_context['ar_design']
             ar_design.add_local(var_name, var_type)
 
@@ -916,6 +954,8 @@ class CodeGenerator:
             self.memory_manager.allocate_local(var_name, size, function_name)
 
             return ar_design.get_offset(var_name)
+
+        # If we're in global context, treat as global variable
         return None
 
     # ========== COMPARISON AND LOGICAL OPERATIONS ==========
